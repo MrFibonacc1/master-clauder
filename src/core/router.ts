@@ -4,7 +4,12 @@
  */
 import type { RoutingDecision, Tier } from '../shared/types.js';
 import { MODEL_CATALOG, modelForTier } from './models.js';
-import type { ModelClient } from './modelClient.js';
+import type { CompleteOptions } from './modelClient.js';
+
+/** Anything that can run a completion (API client or claude-CLI client). */
+export interface CompletionClient {
+  complete(opts: CompleteOptions): Promise<string>;
+}
 
 export const TIER_ORDER: Tier[] = ['cheap', 'mid', 'top', 'max'];
 
@@ -63,7 +68,7 @@ export interface RouteTaskOptions {
   maxModel: Tier;
   defaultTier: Tier;
   override?: string;
-  client?: ModelClient;
+  client?: CompletionClient;
 }
 
 const CLASSIFIER_SCHEMA = {

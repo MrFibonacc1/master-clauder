@@ -163,7 +163,18 @@ program
       hub.store.on('event', check);
     });
 
-    const final = hub.store.getTask(task.id);
+    // Drain the merge queue before exiting so finished branches land on main.
+    let final = hub.store.getTask(task.id);
+    if (final?.status === 'awaiting-merge') {
+      while (hub.store.nextQueuedMerge(task.repo)) {
+        await hub.mergeQueue.processNext();
+      }
+      const merges = hub.store.listMergeQueue().filter((m) => m.taskId === task.id);
+      if (merges.length && merges.every((m) => m.status === 'merged')) {
+        hub.store.setTaskStatus(task.id, 'done');
+      }
+      final = hub.store.getTask(task.id);
+    }
     const cost = hub.store.costForTask(task.id);
     console.log(pc.bold(`\nTask ${final?.status} — cost ${fmtUsd(cost)}`));
     await hub.shutdown();

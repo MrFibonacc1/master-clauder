@@ -9,6 +9,7 @@ import { CoordinationStore } from '../core/store.js';
 import type { CortexConfig, PlannedSubtask, RoutingDecision, TaskRecord, Tier } from '../shared/types.js';
 import { routeTask, escalate } from '../core/router.js';
 import { ModelClient } from '../core/modelClient.js';
+import { CliModelClient } from '../core/cliClient.js';
 import { Brain } from '../core/brain.js';
 import { GitManager } from '../orchestration/git.js';
 import { AgentManager } from '../orchestration/agentManager.js';
@@ -44,7 +45,7 @@ export class Hub {
   git: GitManager;
   agents: AgentManager;
   mergeQueue: MergeQueue;
-  modelClient: ModelClient;
+  modelClient: ModelClient | CliModelClient;
   orchestrator: Orchestrator;
 
   constructor(config?: CortexConfig) {
@@ -57,7 +58,11 @@ export class Hub {
       runnerPath: path.join(path.dirname(new URL(import.meta.url).pathname), '../orchestration/agentRunner.js'),
       logsDir: path.join(CORTEX_HOME, 'logs'),
     });
-    this.modelClient = new ModelClient(this.store, this.config.budget);
+    // Prefer the user's Claude Code subscription (headless `claude -p`) when no
+    // API key is set; fall back to the direct API client otherwise.
+    this.modelClient = process.env.ANTHROPIC_API_KEY
+      ? new ModelClient(this.store, this.config.budget)
+      : new CliModelClient(this.store, this.config.budget);
     this.mergeQueue = new MergeQueue(this.store, this.git, this.config.repos);
     this.orchestrator = new Orchestrator({
       store: this.store,

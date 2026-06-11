@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   const prompt = [
     cfg.memoryContext ? `# Relevant memory\n${cfg.memoryContext}` : '',
     `# Task\n${cfg.prompt}`,
-    `# Constraints\nStay strictly within the file paths you own for this task. Do not modify files outside your ownership. Commit your work in this worktree; never push or touch other branches.`,
+    `# Constraints\nYour working directory is an ISOLATED GIT WORKTREE at ${cfg.worktreePath} — this is the only place you may read or write project files. Use relative paths only. NEVER operate on the main repository checkout or any absolute path outside your worktree, even if other paths are mentioned in memory or context notes. Stay strictly within the file paths you own for this task. When your change is complete, commit it in this worktree with a short message (git add -A && git commit). Never push; never touch other branches.`,
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
           outputTokens: u.output_tokens ?? 0,
           cacheReadTokens: u.cache_read_input_tokens ?? 0,
           cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
-          costUsd: 0, // hub computes
+          costUsd: message.total_cost_usd ?? 0,
         },
       });
       success = message.subtype === 'success' && !message.is_error;
