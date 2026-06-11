@@ -1,0 +1,55 @@
+import type { AgentRecord, CortexEvent, CostSummary, MemoryHit, MergeItem, StatusSnapshot, TaskRecord } from './types';
+
+async function get<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  status: () => get<StatusSnapshot>('/api/status'),
+  tasks: () => get<TaskRecord[]>('/api/tasks'),
+  agents: () => get<AgentRecord[]>('/api/agents'),
+  events: (since = 0) => get<CortexEvent[]>(`/api/events?since=${since}`),
+  costs: () => get<CostSummary>('/api/costs'),
+  mergeQueue: () => get<MergeItem[]>('/api/merge-queue'),
+  memorySearch: (q: string) => get<MemoryHit[]>(`/api/memory?q=${encodeURIComponent(q)}`),
+  memoryList: () => get<unknown>('/api/memory'),
+  pin: (relPath: string, pinned: boolean) =>
+    fetch('/api/memory/pin', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ relPath, pinned }),
+    }),
+  deleteNote: (relPath: string) =>
+    fetch('/api/memory', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ relPath }),
+    }),
+  agentAction: (id: string, action: 'pause' | 'resume' | 'kill') =>
+    fetch(`/api/agents/${id}/${action}`, { method: 'POST' }),
+};
+
+export function openEventStream(onSnapshot: (s: StatusSnapshot) => void, onEvent: (e: CortexEvent) => void): () => void {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  let ws: WebSocket | null = null;
+  let closed = false;
+
+  const connect = () => {
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onmessage = (m) => {
+      const msg = JSON.parse(m.data as string);
+      if (msg.type === 'snapshot') onSnapshot(msg.status);
+      else if (msg.type === 'event') onEvent(msg.event);
+    };
+    ws.onclose = () => {
+      if (!closed) setTimeout(connect, 2000);
+    };
+  };
+  connect();
+  return () => {
+    closed = true;
+    ws?.close();
+  };
+}
