@@ -2,7 +2,8 @@
 /**
  * cortex — CLI entry point.
  */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import path from 'node:path';
 import readline from 'node:readline';
 import { Command } from 'commander';
 import pc from 'picocolors';
@@ -14,6 +15,70 @@ import { Brain } from '../core/brain.js';
 
 const program = new Command();
 program.name('cortex').description('Cortex — local-first multi-agent coding orchestrator').version('0.1.0');
+
+/** Write the standard repo brain note for a newly registered repo. */
+async function writeRepoNote(cfg: CortexConfig, name: string, repoPath: string, mainBranch?: string): Promise<void> {
+  const brain = new Brain(cfg.vaultPath);
+  await brain.ensureVault();
+  await brain.writeNote({
+    relPath: `repos/${name}/repo.md`,
+    title: name,
+    scope: 'repo',
+    repo: name,
+    type: 'convention',
+    tags: ['repo'],
+    pinned: true,
+    created: new Date().toISOString().slice(0, 10),
+    body: `Repo **${name}** registered at \`${repoPath}\` (main branch: ${mainBranch ?? 'main'}).`,
+    links: [],
+  });
+}
+
+/** Find the git toplevel of cwd, if any. */
+function gitToplevel(dir: string): string | undefined {
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8' }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Claude-CLI-like repo resolution: prefer the registered repo containing cwd;
+ * if cwd is inside an unregistered git repo, auto-register it.
+ */
+async function resolveRepoForCwd(cfg: CortexConfig): Promise<string | undefined> {
+  const top = gitToplevel(process.cwd());
+  if (top) {
+    const existing = Object.values(cfg.repos).find((r) => path.resolve(r.path) === top);
+    if (existing) return existing.name;
+    const rc = registerRepo(cfg, top);
+    await writeRepoNote(cfg, rc.name, rc.path, rc.mainBranch);
+    console.log(pc.dim(`Auto-registered repo "${rc.name}" (${rc.path})`));
+    return rc.name;
+  }
+  const names = Object.keys(cfg.repos);
+  return names.length === 1 ? names[0] : undefined;
+}
+
+/** Start the dashboard server on the hub, tolerating an already-used port. */
+async function startDashboard(hub: Hub, open = false): Promise<string | undefined> {
+  const port = hub.config.dashboardPort;
+  const url = `http://localhost:${port}`;
+  try {
+    await startServer(hub, port);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EADDRINUSE') throw err;
+    console.log(pc.dim(`Dashboard port ${port} already in use — assuming another cortex session is serving it.`));
+    return url;
+  }
+  if (open) {
+    const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+    spawn(opener, [url], { stdio: 'ignore', detached: true }).unref();
+  }
+  return url;
+}
 
 function fmtUsd(n: number): string {
   return `$${n.toFixed(4)}`;
@@ -54,20 +119,7 @@ program
   .action(async (p: string | undefined) => {
     const cfg = loadConfig();
     const rc = registerRepo(cfg, p ?? process.cwd());
-    const brain = new Brain(cfg.vaultPath);
-    await brain.ensureVault();
-    await brain.writeNote({
-      relPath: `repos/${rc.name}/repo.md`,
-      title: rc.name,
-      scope: 'repo',
-      repo: rc.name,
-      type: 'convention',
-      tags: ['repo'],
-      pinned: true,
-      created: new Date().toISOString().slice(0, 10),
-      body: `Repo **${rc.name}** registered at \`${rc.path}\` (main branch: ${rc.mainBranch ?? 'main'}).`,
-      links: [],
-    });
+    await writeRepoNote(cfg, rc.name, rc.path, rc.mainBranch);
     console.log(pc.green(`Registered repo "${rc.name}" at ${rc.path}`));
     console.log(pc.dim(`Brain note: repos/${rc.name}/repo.md`));
   });
@@ -77,16 +129,26 @@ program
 program
   .command('task <title...>')
   .description('Dispatch a task to agents')
-  .requiredOption('-r, --repo <name>', 'repo name')
+  .option('-r, --repo <name>', 'repo name (default: the repo containing the current directory)')
   .option('--model <id>', 'force a specific model id')
   .option('--max-model <tier>', 'cap escalation at tier (cheap|mid|top|max)')
-  .action(async (titleWords: string[], opts: { repo: string; model?: string; maxModel?: Tier }) => {
+  .option('--no-web', 'do not start the dashboard server')
+  .action(async (titleWords: string[], opts: { repo?: string; model?: string; maxModel?: Tier; web: boolean }) => {
     const title = titleWords.join(' ');
     const hub = new Hub();
     await hub.init();
+    const repo = opts.repo ?? (await resolveRepoForCwd(hub.config));
+    if (!repo) {
+      console.error(pc.red('No repo: run cortex inside a git repo, or pass -r <name>.'));
+      process.exit(1);
+    }
+    if (opts.web) {
+      const url = await startDashboard(hub);
+      if (url) console.log(pc.dim(`Dashboard: ${url}`));
+    }
 
     hub.store.on('event', printEvent);
-    const task = await hub.dispatchTask(title, opts.repo, { model: opts.model, maxModel: opts.maxModel });
+    const task = await hub.dispatchTask(title, repo, { model: opts.model, maxModel: opts.maxModel });
     console.log(pc.bold(`Task ${task.id}: "${title}" → ${task.model} [${task.tier}]`));
 
     await new Promise<void>((resolve) => {
@@ -173,12 +235,8 @@ program
   .action(async () => {
     const hub = new Hub();
     await hub.init();
-    const port = hub.config.dashboardPort;
-    await startServer(hub, port);
-    const url = `http://localhost:${port}`;
+    const url = await startDashboard(hub, true);
     console.log(pc.green(`Dashboard running at ${url}`));
-    const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
-    spawn(opener, [url], { stdio: 'ignore', detached: true }).unref();
   });
 
 // ---------------------------------------------------------------- memory
@@ -285,9 +343,19 @@ async function repl(): Promise<void> {
   const hub = new Hub();
   await hub.init();
   hub.store.on('event', printEvent);
-  console.log(pc.bold(pc.cyan('cortex repl')) + pc.dim(' — type a task, or /help'));
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: pc.magenta('cortex> ') });
+  // Claude-CLI feel: bind the session to the repo you're standing in,
+  // and have the website live from the first keystroke.
+  let currentRepo = await resolveRepoForCwd(hub.config);
+  const url = await startDashboard(hub);
+
+  console.log(pc.bold(pc.cyan('cortex')) + pc.dim(' — type a task, or /help'));
+  if (currentRepo) console.log(pc.dim(`repo: ${currentRepo}`));
+  else console.log(pc.yellow('not inside a registered repo — use /repo <name> or cd into one'));
+  if (url) console.log(pc.dim(`dashboard: ${url}`));
+
+  const promptStr = (): string => pc.magenta(`cortex${currentRepo ? pc.dim(`(${currentRepo})`) : ''}> `);
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: promptStr() });
   rl.prompt();
 
   const ask = (q: string): Promise<string> => new Promise((res) => rl.question(q, res));
@@ -318,13 +386,23 @@ async function repl(): Promise<void> {
             console.log(pc.green(`${cmd} → ${rest[0]}`));
             break;
           case 'dashboard': {
-            const port = hub.config.dashboardPort;
-            await startServer(hub, port);
-            console.log(pc.green(`Dashboard: http://localhost:${port}`));
+            const u = await startDashboard(hub, true);
+            console.log(pc.green(`Dashboard: ${u}`));
+            break;
+          }
+          case 'repo': {
+            const name = rest[0];
+            if (name && hub.config.repos[name]) {
+              currentRepo = name;
+              rl.setPrompt(promptStr());
+              console.log(pc.green(`repo → ${name}`));
+            } else {
+              console.log(pc.dim(`registered: ${Object.keys(hub.config.repos).join(', ') || '(none)'}`));
+            }
             break;
           }
           case 'help':
-            console.log(pc.dim('/status /memory <q> /agents /pause <id> /resume <id> /kill <id> /dashboard /quit\nplain text = dispatch a task'));
+            console.log(pc.dim('/status /memory <q> /agents /repo [name] /pause <id> /resume <id> /kill <id> /dashboard /quit\nplain text = dispatch a task in the current repo'));
             break;
           case 'quit':
           case 'exit':
@@ -335,15 +413,19 @@ async function repl(): Promise<void> {
             console.log(pc.red(`unknown command /${cmd} — try /help`));
         }
       } else {
-        const repos = Object.keys(hub.config.repos);
-        let repo = repos[0];
+        let repo = currentRepo;
         if (!repo) {
-          console.log(pc.red('No repos registered. Run `cortex init <path>` first.'));
-        } else {
-          if (repos.length > 1) {
+          const repos = Object.keys(hub.config.repos);
+          if (!repos.length) {
+            console.log(pc.red('No repos registered. cd into a git repo or run `cortex init <path>` first.'));
+          } else {
             const ans = (await ask(pc.dim(`repo? (${repos.join(', ')}) `))).trim();
-            repo = repos.includes(ans) ? ans : repo;
+            repo = repos.includes(ans) ? ans : repos[0];
+            currentRepo = repo;
+            rl.setPrompt(promptStr());
           }
+        }
+        if (repo) {
           const task = await hub.dispatchTask(input, repo);
           console.log(pc.bold(`Task ${task.id} dispatched → ${task.model}`));
         }
