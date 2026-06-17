@@ -51,6 +51,18 @@ export const api = {
   pauseAll: () => fetch('/api/agents/pause-all', { method: 'POST' }),
   reviews: () => get<ReviewInfo[]>('/api/reviews'),
   agentDiff: (id: string) => get<AgentDiff>('/api/agents/' + encodeURIComponent(id) + '/diff'),
+  agentLog: (id: string, tail = 800) =>
+    get<{ ok: boolean; lines: string[] }>('/api/agents/' + encodeURIComponent(id) + '/log?tail=' + tail),
+  claudeMd: (repo: string) =>
+    get<{ ok: boolean; content: string; exists: boolean; path: string }>(
+      '/api/repos/' + encodeURIComponent(repo) + '/claude-md',
+    ),
+  saveClaudeMd: (repo: string, content: string) =>
+    fetch('/api/repos/' + encodeURIComponent(repo) + '/claude-md', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content }),
+    }).then((r) => r.json()),
   review: (id: string, decision: 'approve' | 'request-changes', comments?: string) =>
     fetch('/api/agents/' + encodeURIComponent(id) + '/review', {
       method: 'POST',

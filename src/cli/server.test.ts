@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { CoordinationStore } from '../core/store.js';
+import { CORTEX_HOME } from '../core/config.js';
 import { startServer, buildResumeCommand, type HubLike } from './server.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cortex-test-'));
@@ -214,6 +215,40 @@ describe('server', () => {
   // The success path (agent with worktree + sdkSessionId -> ok:true, command
   // contains `claude --resume <sid>` and the worktree path) is covered by the
   // buildResumeCommand unit test above so the suite never launches a terminal.
+
+  it('GET /api/agents/:id/log returns {ok:true,lines:[]} when no transcript exists (B5)', async () => {
+    // CORTEX_HOME is resolved at import time, so a never-written agent id has no
+    // <id>.jsonl under it; the endpoint must degrade to an empty list, not 500.
+    const res = await fetch(`http://127.0.0.1:${port}/api/agents/no-such-agent/log`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; lines: string[] };
+    expect(body).toEqual({ ok: true, lines: [] });
+  });
+
+  it('GET /api/agents/:id/log tails the last N raw NDJSON lines (B5)', async () => {
+    const logsDir = path.join(CORTEX_HOME, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const agentId = 'agent_log_test';
+    const logPath = path.join(logsDir, `${agentId}.jsonl`);
+    const written = [
+      JSON.stringify({ kind: 'status', status: 'working' }),
+      JSON.stringify({ kind: 'message', text: 'first' }),
+      JSON.stringify({ kind: 'message', text: 'second' }),
+      JSON.stringify({ kind: 'done', success: true, summary: 'ok' }),
+    ];
+    // Trailing newline + a blank line to confirm filter(Boolean) drops empties.
+    fs.writeFileSync(logPath, `${written.join('\n')}\n\n`);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/agents/${agentId}/log?tail=2`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ok: boolean; lines: string[] };
+      // Raw strings, returned as-is (dashboard parses), last 2 only.
+      expect(body.lines).toEqual(written.slice(-2));
+      expect(JSON.parse(body.lines[1])).toEqual({ kind: 'done', success: true, summary: 'ok' });
+    } finally {
+      fs.rmSync(logPath, { force: true });
+    }
+  });
 });
 
 describe('server with multiple repos', () => {
@@ -367,5 +402,85 @@ describe('server review-before-merge (A1)', () => {
     expect(res.status).toBe(404);
     const body = (await res.json()) as { ok: boolean; error: string };
     expect(body).toEqual({ ok: false, error: 'no review for agent' });
+  });
+});
+
+describe('server CLAUDE.md view/edit (E3)', () => {
+  let cmApp: FastifyInstance;
+  let cmPort: number;
+  const cmStore = new CoordinationStore(path.join(tmp, 'state-claude-md.db'));
+  // A stub repo backed by a real temp dir so reads/writes hit the filesystem.
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cortex-repo-'));
+
+  beforeAll(async () => {
+    const cmHub: HubLike = {
+      status: () => ({ tasks: [], agents: [], costs: { byTask: {}, byAgent: {}, total: 0 } }),
+      store: cmStore,
+      brain: fakeBrain,
+      config: { repos: { app: { name: 'app', path: repoDir } } },
+    };
+    cmApp = await startServer(cmHub, 0);
+    const addr = cmApp.server.address();
+    cmPort = typeof addr === 'object' && addr ? addr.port : 0;
+  });
+
+  afterAll(async () => {
+    await cmApp.close();
+    cmStore.close();
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('GET claude-md returns content + exists:true when the file is present', async () => {
+    const expected = '# App conventions\nUse tabs.\n';
+    fs.writeFileSync(path.join(repoDir, 'CLAUDE.md'), expected);
+    const res = await fetch(`http://127.0.0.1:${cmPort}/api/repos/app/claude-md`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; content: string; exists: boolean; path: string };
+    expect(body.ok).toBe(true);
+    expect(body.exists).toBe(true);
+    expect(body.content).toBe(expected);
+    expect(body.path).toBe(path.join(repoDir, 'CLAUDE.md'));
+  });
+
+  it('GET claude-md for an unknown repo returns 404', async () => {
+    const res = await fetch(`http://127.0.0.1:${cmPort}/api/repos/nope/claude-md`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body).toEqual({ ok: false, error: 'unknown repo' });
+  });
+
+  it('PUT claude-md writes the file and returns ok (round-trip)', async () => {
+    const content = '# Updated conventions\nPrefer Edit over sed.\n';
+    const res = await fetch(`http://127.0.0.1:${cmPort}/api/repos/app/claude-md`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    // Verify by reading the file back off disk.
+    expect(fs.readFileSync(path.join(repoDir, 'CLAUDE.md'), 'utf8')).toBe(content);
+  });
+
+  it('PUT claude-md with a non-string content returns 400', async () => {
+    const res = await fetch(`http://127.0.0.1:${cmPort}/api/repos/app/claude-md`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 123 }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body).toEqual({ ok: false, error: 'content must be a string' });
+  });
+
+  it('PUT claude-md for an unknown repo returns 404', async () => {
+    const res = await fetch(`http://127.0.0.1:${cmPort}/api/repos/nope/claude-md`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'x' }),
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body).toEqual({ ok: false, error: 'unknown repo' });
   });
 });

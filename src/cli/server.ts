@@ -10,6 +10,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import type { AgentDiff, CortexEvent, DiffStat, ReviewInfo } from '../shared/types.js';
+import { CORTEX_HOME } from '../core/config.js';
 import type { Hub } from './hub.js';
 
 /** The subset of Hub the server needs (lets tests pass a stub). */
@@ -48,6 +49,10 @@ function capPatch(patch: string): string {
   if (patch.length <= MAX_PATCH_BYTES) return patch;
   return `${patch.slice(0, MAX_PATCH_BYTES)}\n... [diff truncated at ${MAX_PATCH_BYTES} bytes]`;
 }
+
+/** Default / max number of NDJSON transcript lines returned by the log-tail endpoint (B5). */
+const LOG_TAIL_DEFAULT = 500;
+const LOG_TAIL_MAX = 2000;
 
 const FALLBACK_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Cortex</title>
 <style>body{background:#0d0e14;color:#aab;font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0}
@@ -122,6 +127,28 @@ export async function startServer(hub: HubLike, port: number): Promise<FastifyIn
     return Object.values(hub.config.repos).map((r) => ({ name: r.name, path: r.path }));
   });
 
+  // ---- CLAUDE.md view/edit (E3) ----
+  // The repo path is server-owned (from config); the body never supplies a path.
+  app.get('/api/repos/:name/claude-md', async (req, reply) => {
+    const { name } = req.params as { name: string };
+    const repo = hub.config?.repos[name];
+    if (!repo) return reply.code(404).send({ ok: false, error: 'unknown repo' });
+    const filePath = path.join(repo.path, 'CLAUDE.md');
+    const exists = fs.existsSync(filePath);
+    const content = exists ? fs.readFileSync(filePath, 'utf8') : '';
+    return { ok: true, content, exists, path: filePath };
+  });
+
+  app.put('/api/repos/:name/claude-md', async (req, reply) => {
+    const { name } = req.params as { name: string };
+    const repo = hub.config?.repos[name];
+    if (!repo) return reply.code(404).send({ ok: false, error: 'unknown repo' });
+    const { content } = (req.body ?? {}) as { content?: unknown };
+    if (typeof content !== 'string') return reply.code(400).send({ ok: false, error: 'content must be a string' });
+    fs.writeFileSync(path.join(repo.path, 'CLAUDE.md'), content);
+    return { ok: true };
+  });
+
   // ---- review-before-merge (A1) ----
   app.get('/api/reviews', async () => hub.listReviews?.() ?? []);
 
@@ -163,6 +190,23 @@ export async function startServer(hub: HubLike, port: number): Promise<FastifyIn
       return { ok: true };
     }
     return reply.code(400).send({ ok: false, error: 'unknown decision' });
+  });
+
+  // ---- live agent log tail (B5) ----
+  // The dashboard polls this every ~1.5s; returns the last `tail` raw NDJSON
+  // lines of the agent's transcript (each is an AgentToHubMsg JSON string).
+  app.get('/api/agents/:id/log', async (req) => {
+    const { id } = req.params as { id: string };
+    const raw = Number((req.query as Record<string, string>).tail ?? LOG_TAIL_DEFAULT);
+    const tail = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 0), LOG_TAIL_MAX) : LOG_TAIL_DEFAULT;
+    try {
+      const logPath = path.join(CORTEX_HOME, 'logs', `${id}.jsonl`);
+      if (!fs.existsSync(logPath)) return { ok: true, lines: [] };
+      const lines = fs.readFileSync(logPath, 'utf8').split('\n').filter(Boolean).slice(-tail);
+      return { ok: true, lines };
+    } catch {
+      return { ok: true, lines: [] };
+    }
   });
 
   // ---- repo sessions (agents) ----

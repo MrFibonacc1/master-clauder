@@ -41,6 +41,7 @@ function modelColor(model: string): string {
 const STATUS_COLOR: Record<string, string> = {
   starting: C.amber,
   working: C.accent,
+  idle: C.amber,
   blocked: C.red,
   paused: C.amber,
   done: C.green,
@@ -300,6 +301,7 @@ export default function FarmView({ status, events }: { status: StatusSnapshot; e
       <canvas ref={canvasRef} className="farm-canvas" />
       <div className="legend farm-legend">
         <span><span className="dot" style={{ background: C.accent }} />working (hoeing)</span>
+        <span><span className="dot" style={{ background: C.amber }} />idle (stalled — needs a look)</span>
         <span><span className="dot" style={{ background: C.red }} />blocked (frozen + !)</span>
         <span><span className="dot" style={{ background: C.amber }} />paused (sits, Zzz)</span>
         <span><span className="dot" style={{ background: C.green }} />done (✓ + sheaf)</span>
@@ -384,12 +386,15 @@ function drawWorker(c: CanvasRenderingContext2D, wb: WorkerBox, t: number) {
   const x = wb.x;
 
   const working = st === 'working' || st === 'starting';
+  const idle = st === 'idle';
   const bobY = working ? Math.sin(t / 600 + phase) * 2 : st === 'paused' ? 1 : 0;
   const slump = st === 'failed';
   const y = wb.y + bobY;
 
   c.save();
   c.translate(x, y);
+  // idle workers are stalled — render them dimmed and still (no hoe-swing)
+  if (idle) c.globalAlpha = 0.5;
 
   // shadow
   c.fillStyle = 'rgba(0,0,0,0.28)';
@@ -483,6 +488,10 @@ function drawWorker(c: CanvasRenderingContext2D, wb: WorkerBox, t: number) {
     const zb = Math.sin(t / 500) * 2;
     c.fillText('z', s * 0.2, badgeY + zb);
     c.fillText('Z', s * 0.36, badgeY - 6 + zb);
+  } else if (st === 'idle') {
+    c.fillStyle = C.amber;
+    c.font = '600 9px ui-monospace, monospace';
+    c.fillText('idle', 0, badgeY);
   } else if (st === 'done') {
     c.fillStyle = C.green;
     c.font = 'bold 12px system-ui';

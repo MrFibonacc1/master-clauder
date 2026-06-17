@@ -79,6 +79,99 @@ function SessionRow({ agent }: { agent: RepoAgent }) {
   );
 }
 
+function ClaudeMdSection({ repo }: { repo: string }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [content, setContent] = useState('');
+  const [exists, setExists] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  // load lazily the first time the section is expanded; reset on repo change
+  useEffect(() => {
+    setOpen(false);
+    setLoaded(false);
+    setContent('');
+    setError(null);
+  }, [repo]);
+
+  useEffect(() => {
+    if (!open || loaded) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api
+      .claudeMd(repo)
+      .then((r) => {
+        if (cancelled) return;
+        setContent(typeof r?.content === 'string' ? r.content : '');
+        setExists(!!r?.exists);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) setError('could not load CLAUDE.md');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, loaded, repo]);
+
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await api.saveClaudeMd(repo, content);
+      if (res && res.ok) {
+        setExists(true);
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      } else {
+        setError((res && res.error) || 'save failed');
+      }
+    } catch {
+      setError('network error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="claude-md">
+      <button className="claude-md-toggle" onClick={() => setOpen((o) => !o)}>
+        <span>{open ? '▾' : '▸'} CLAUDE.md</span>
+        {loaded && !exists && <span className="claude-md-hint">not created yet</span>}
+      </button>
+      {open && (
+        <div className="claude-md-body">
+          {loading && <div className="empty">loading…</div>}
+          {!loading && (
+            <>
+              <textarea
+                className="review-textarea claude-md-textarea"
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="Repo conventions for agents — saved as CLAUDE.md"
+              />
+              <div className="claude-md-actions">
+                <button className="btn primary" onClick={save} disabled={saving}>
+                  {saving ? 'Saving…' : saved ? 'Saved ✓' : 'Save'}
+                </button>
+              </div>
+            </>
+          )}
+          {error && <div className="session-error">{error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function RepoDrawer({ repo, onClose }: { repo: string; onClose: () => void }) {
   const [agents, setAgents] = useState<RepoAgent[] | null>(null);
 
@@ -108,6 +201,7 @@ export default function RepoDrawer({ repo, onClose }: { repo: string; onClose: (
         <div className="drawer-meta">{count} session{count === 1 ? '' : 's'}</div>
       </div>
       <div className="session-list">
+        <ClaudeMdSection repo={repo} />
         {agents === null && <div className="empty">loading…</div>}
         {agents !== null && agents.length === 0 && <div className="empty">no sessions yet on this repo</div>}
         {agents?.map((a) => (
