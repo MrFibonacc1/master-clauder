@@ -1,6 +1,6 @@
 /**
  * CoordinationStore — SQLite-backed shared state: task board, claims,
- * event log, routing decisions, usage/cost, merge queue, checkpoints.
+ * event log, routing decisions, usage/cost, merge queue, parked reviews.
  * Single writer (the hub process). All reads are synchronous (better-sqlite3).
  */
 import Database from 'better-sqlite3';

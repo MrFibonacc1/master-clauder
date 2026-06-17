@@ -16,6 +16,7 @@ const DEFAULTS: CortexConfig = {
   defaultTier: 'mid',
   autonomy: 'standard',
   reviewBeforeMerge: false,
+  idleStallMs: 90_000,
   concurrency: 5,
   dashboardPort: 4242,
   budget: { perTaskUsd: 5, perDayUsd: 25, warnRatio: 0.8 },

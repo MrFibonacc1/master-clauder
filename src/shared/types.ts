@@ -55,6 +55,7 @@ export interface CortexConfig {
   defaultTier: Tier;
   autonomy: Autonomy; // default permission autonomy for agents
   reviewBeforeMerge: boolean; // if true, finished agents park for human diff review before merging
+  idleStallMs: number; // no agent message for this long → mark the agent "idle" (B6)
   concurrency: number; // max concurrent agents
   dashboardPort: number;
   budget: BudgetConfig;
@@ -138,12 +139,21 @@ export interface Claim {
 export type AgentStatus =
   | 'starting'
   | 'working'
+  | 'idle'
   | 'blocked'
   | 'paused'
   | 'needs-review'
   | 'done'
   | 'failed'
   | 'killed';
+
+/** Per-agent permission scope, on top of the global autonomy level (E2). */
+export interface AgentPolicy {
+  /** Path globs the agent may write to (default: its worktree). Empty/undefined = worktree only. */
+  writeGlobs?: string[];
+  /** Whether the agent may use network tools (WebFetch/WebSearch). Default true. */
+  allowNetwork?: boolean;
+}
 
 export interface AgentRecord {
   id: string;
@@ -263,3 +273,43 @@ export type HubToAgentMsg =
   | { kind: 'kill' }
   | { kind: 'approval'; id: string; allow: boolean }
   | { kind: 'context'; text: string }; // injected event-log digest
+
+// ---------- API / view aggregates (shared with the dashboard) ----------
+
+export interface CostSummary {
+  byTask: Record<string, number>;
+  byAgent: Record<string, number>;
+  total: number;
+}
+
+export interface StatusSnapshot {
+  tasks: TaskRecord[];
+  agents: AgentRecord[];
+  costs: CostSummary;
+  daySpendUsd: number;
+  budget: BudgetConfig;
+  mergeQueue: MergeItem[];
+}
+
+/** One row of GET /api/repos/:name/agents. */
+export interface RepoAgent {
+  id: string;
+  name: string;
+  status: AgentStatus;
+  model: string;
+  branch?: string;
+  worktreePath?: string;
+  sdkSessionId?: string;
+  taskId: string;
+  taskTitle: string;
+  cost: number;
+}
+
+export interface RoutingDecisionRow {
+  taskId: string;
+  tier: string;
+  model: string;
+  reason: string;
+  source: string;
+  ts: number;
+}

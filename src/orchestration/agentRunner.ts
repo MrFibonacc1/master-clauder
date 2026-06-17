@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import readline from 'node:readline';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentToHubMsg, Autonomy, HubToAgentMsg } from '../shared/types.js';
+import type { AgentPolicy, AgentToHubMsg, Autonomy, HubToAgentMsg } from '../shared/types.js';
 import { evaluateTool } from '../core/permissions.js';
 
 export interface AgentRunnerConfig {
@@ -18,6 +18,7 @@ export interface AgentRunnerConfig {
   prompt: string;
   memoryContext: string;
   autonomy: Autonomy;
+  policy?: AgentPolicy;
   sdkSessionId?: string;
 }
 
@@ -74,15 +75,19 @@ async function main(): Promise<void> {
     .join('\n\n');
 
   const autonomy: Autonomy = cfg.autonomy ?? 'standard';
-  // full → never ask (bypass). standard/careful → gate via canUseTool: auto-grant
-  // the safe majority, deny the dangerous few with an actionable message.
+  // A per-agent policy (E2) that actually restricts something forces the gate
+  // even under full autonomy — otherwise bypassPermissions would skip the scope.
+  const p = cfg.policy;
+  const hasScope = !!p && (p.allowNetwork === false || (!!p.writeGlobs && p.writeGlobs.length > 0 && !p.writeGlobs.includes('**')));
+  // full + no scope → never ask (bypass). otherwise gate via canUseTool: auto-grant
+  // the safe majority, deny the dangerous/out-of-scope few with an actionable message.
   const permissionOpts =
-    autonomy === 'full'
+    autonomy === 'full' && !hasScope
       ? { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }
       : {
           permissionMode: 'default' as const,
           canUseTool: async (toolName: string, input: Record<string, unknown>) => {
-            const decision = evaluateTool(autonomy, toolName, input, cfg.worktreePath);
+            const decision = evaluateTool(autonomy, toolName, input, cfg.worktreePath, cfg.policy);
             if (decision.behavior === 'deny') {
               send({ kind: 'tool', name: `blocked:${toolName}`, summary: decision.message });
               return { behavior: 'deny' as const, message: decision.message };

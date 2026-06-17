@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import type { CoordinationStore } from '../core/store.js';
-import type { AgentRecord, AgentToHubMsg, Autonomy, HubToAgentMsg } from '../shared/types.js';
+import type { AgentPolicy, AgentRecord, AgentToHubMsg, Autonomy, HubToAgentMsg } from '../shared/types.js';
 
 export interface AgentSpawnSpec {
   agentId: string;
@@ -21,6 +21,7 @@ export interface AgentSpawnSpec {
   prompt: string;
   memoryContext: string;
   autonomy: Autonomy;
+  policy?: AgentPolicy;
   ownership: string[];
   worktree: { worktreePath: string; branch: string };
   resumeSessionId?: string;
@@ -36,21 +37,47 @@ interface RunningAgent {
   record: AgentRecord;
   log: WriteStream;
   doneEmitted: boolean;
+  lastMsgTs: number;
 }
 
 const KILL_GRACE_MS = 5000;
+const IDLE_SWEEP_MS = 5000;
 
 export class AgentManager {
   private running = new Map<string, RunningAgent>();
   private queue: (() => void)[] = [];
   /** Last cumulative cost (USD) seen per SDK session, for per-turn delta accounting. */
   private sessionCost = new Map<string, number>();
+  private idleStallMs: number;
+  private idleTimer: NodeJS.Timeout;
 
   constructor(
     private store: CoordinationStore,
-    private opts: { concurrency: number; runnerPath: string; logsDir: string },
+    private opts: { concurrency: number; runnerPath: string; logsDir: string; idleStallMs?: number },
   ) {
     mkdirSync(opts.logsDir, { recursive: true });
+    this.idleStallMs = opts.idleStallMs ?? 90_000;
+    // B6: an agent that hasn't emitted a message for idleStallMs while "working"
+    // is likely stalled or waiting on input → flag it "idle" so the operator can triage.
+    this.idleTimer = setInterval(() => this.sweepIdle(), IDLE_SWEEP_MS);
+    this.idleTimer.unref?.();
+  }
+
+  private sweepIdle(): void {
+    const now = Date.now();
+    for (const ra of this.running.values()) {
+      if (ra.record.status === 'working' && now - ra.lastMsgTs > this.idleStallMs) {
+        ra.record.status = 'idle';
+        this.store.upsertAgent(ra.record);
+        this.store.append({
+          ts: now,
+          type: 'agent.status',
+          agentId: ra.record.id,
+          taskId: ra.record.taskId,
+          payload: { status: 'idle', detail: `no activity for ${Math.round((now - ra.lastMsgTs) / 1000)}s` },
+        });
+      }
+    }
   }
 
   activeCount(): number {
@@ -89,6 +116,7 @@ export class AgentManager {
         prompt: spec.prompt,
         memoryContext: spec.memoryContext,
         autonomy: spec.autonomy,
+        policy: spec.policy,
         sdkSessionId: spec.resumeSessionId,
       }),
     );
@@ -109,7 +137,7 @@ export class AgentManager {
     });
 
     const log = createWriteStream(path.join(this.opts.logsDir, `${spec.agentId}.jsonl`), { flags: 'a' });
-    const ra: RunningAgent = { child, record, log, doneEmitted: false };
+    const ra: RunningAgent = { child, record, log, doneEmitted: false, lastMsgTs: Date.now() };
     this.running.set(spec.agentId, ra);
 
     return new Promise<AgentResult>((resolve) => {
@@ -163,6 +191,13 @@ export class AgentManager {
 
   private handleMsg(ra: RunningAgent, msg: AgentToHubMsg, finish: (r: AgentResult) => void): void {
     const { record } = ra;
+    ra.lastMsgTs = Date.now();
+    // Recover from an idle flag the moment the agent speaks again (B6).
+    if (record.status === 'idle' && msg.kind !== 'done') {
+      record.status = 'working';
+      this.store.upsertAgent(record);
+      this.store.append({ ts: Date.now(), type: 'agent.status', agentId: record.id, taskId: record.taskId, payload: { status: 'working' } });
+    }
     const base = { ts: Date.now(), agentId: record.id, taskId: record.taskId };
     switch (msg.kind) {
       case 'session':

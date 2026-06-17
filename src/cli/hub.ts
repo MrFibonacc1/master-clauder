@@ -3,10 +3,12 @@
  * Wires config, coordination store, brain, git, agents, merge queue,
  * model client and orchestrator together, and implements task dispatch.
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, repoConfig, statePath, CORTEX_HOME } from '../core/config.js';
 import { CoordinationStore } from '../core/store.js';
 import type {
+  AgentPolicy,
   Autonomy,
   CortexConfig,
   PlannedSubtask,
@@ -38,9 +40,20 @@ interface ExecCtx {
   repoPath: string;
   mainBranch: string;
   memoryContext: string;
+  claudeMd: string;
   maxModel: Tier;
   autonomy: Autonomy;
   review: boolean;
+}
+
+/** Read a repo's CLAUDE.md (root) if present, so agents follow its conventions (E3). */
+export function readClaudeMd(repoPath: string): string {
+  try {
+    const p = path.join(repoPath, 'CLAUDE.md');
+    return fs.existsSync(p) ? fs.readFileSync(p, 'utf8').slice(0, 16_000) : '';
+  } catch {
+    return '';
+  }
 }
 
 /** A finished agent held awaiting human review, with enough state to resume it. */
@@ -99,6 +112,7 @@ export class Hub {
       concurrency: this.config.concurrency,
       runnerPath: path.join(path.dirname(new URL(import.meta.url).pathname), '../orchestration/agentRunner.js'),
       logsDir: path.join(CORTEX_HOME, 'logs'),
+      idleStallMs: this.config.idleStallMs,
     });
     // Prefer the user's Claude Code subscription (headless `claude -p`) when no
     // API key is set; fall back to the direct API client otherwise.
@@ -165,7 +179,15 @@ export class Hub {
     const retrieval = await this.brain.retrieveForTask(title, repoName, 6);
     const memoryContext = retrieval.hits.length ? retrieval.renderContext(retrieval.hits) : '';
 
-    const ctx: ExecCtx = { repoPath: rc.path, mainBranch, memoryContext, maxModel, autonomy, review };
+    const ctx: ExecCtx = {
+      repoPath: rc.path,
+      mainBranch,
+      memoryContext,
+      claudeMd: readClaudeMd(rc.path),
+      maxModel,
+      autonomy,
+      review,
+    };
     // Fire-and-forget execution; status is observable via store events.
     void this.executeTask(task, ctx, decision).catch((err: unknown) => {
       this.store.setTaskStatus(taskId, 'failed');
@@ -232,6 +254,15 @@ export class Hub {
 
     const digest = digestRecentEvents(this.store, task.repo);
     const basePrompt = digest ? `${sub.prompt}\n\nRecent activity in this repo:\n${digest}` : sub.prompt;
+    // E3: prepend the repo's CLAUDE.md so agents follow its conventions first-try.
+    const effectiveMemory = [
+      ctx.claudeMd ? `# Repo conventions (CLAUDE.md)\n${ctx.claudeMd}` : '',
+      ctx.memoryContext,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    // E2: scope writes to the subtask's owned paths (advisory ownership → enforced).
+    const policy: AgentPolicy = { writeGlobs: sub.ownership, allowNetwork: true };
     const spawnOnce = async (resumeSessionId?: string): Promise<{ success: boolean; summary: string }> =>
       this.agents.spawn({
         agentId,
@@ -241,8 +272,9 @@ export class Hub {
         repoPath: ctx.repoPath,
         model,
         prompt: basePrompt,
-        memoryContext: ctx.memoryContext,
+        memoryContext: effectiveMemory,
         autonomy: ctx.autonomy,
+        policy,
         ownership: sub.ownership,
         worktree: { worktreePath, branch },
         resumeSessionId,
@@ -298,7 +330,7 @@ export class Hub {
           model,
           subTitle: sub.title,
           subPrompt: basePrompt,
-          memoryContext: ctx.memoryContext,
+          memoryContext: effectiveMemory,
           autonomy: ctx.autonomy,
           ownership: sub.ownership,
           summary: result.summary,
@@ -411,6 +443,7 @@ export class Hub {
         prompt,
         memoryContext: pr.memoryContext,
         autonomy: pr.autonomy,
+        policy: { writeGlobs: pr.ownership, allowNetwork: true },
         ownership: pr.ownership,
         worktree: { worktreePath: pr.worktreePath, branch: pr.branch },
         resumeSessionId,

@@ -39,6 +39,29 @@ describe('evaluateTool', () => {
     });
   });
 
+  describe('per-agent policy (E2)', () => {
+    it('denies writes outside the agent owned globs', () => {
+      const policy = { writeGlobs: ['src/**'], allowNetwork: true };
+      expect(evaluateTool('standard', 'Edit', { file_path: `${WT}/src/a.ts` }, WT, policy).behavior).toBe('allow');
+      expect(evaluateTool('standard', 'Write', { file_path: `${WT}/docs/b.md` }, WT, policy).behavior).toBe('deny');
+    });
+    it("enforces scope even under full autonomy", () => {
+      const policy = { writeGlobs: ['src/**'] };
+      expect(evaluateTool('full', 'Edit', { file_path: `${WT}/other/x.ts` }, WT, policy).behavior).toBe('deny');
+      expect(evaluateTool('full', 'Edit', { file_path: `${WT}/src/x.ts` }, WT, policy).behavior).toBe('allow');
+    });
+    it("['**'] means no write restriction", () => {
+      const policy = { writeGlobs: ['**'] };
+      expect(evaluateTool('standard', 'Write', { file_path: `${WT}/anywhere.ts` }, WT, policy).behavior).toBe('allow');
+    });
+    it('blocks network tools when allowNetwork is false', () => {
+      const policy = { allowNetwork: false };
+      expect(evaluateTool('standard', 'WebFetch', { url: 'https://x' }, WT, policy).behavior).toBe('deny');
+      expect(evaluateTool('full', 'WebSearch', { query: 'x' }, WT, policy).behavior).toBe('deny');
+      expect(evaluateTool('standard', 'Read', { file_path: 'a' }, WT, policy).behavior).toBe('allow');
+    });
+  });
+
   describe('careful (read-and-plan)', () => {
     it('allows reads and read-only bash', () => {
       expect(evaluateTool('careful', 'Read', { file_path: `${WT}/a.ts` }, WT).behavior).toBe('allow');
