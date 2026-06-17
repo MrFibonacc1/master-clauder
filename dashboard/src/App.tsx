@@ -96,12 +96,18 @@ const MODEL_OPTIONS: { label: string; value: string }[] = [
   { label: 'Fable', value: 'claude-fable-5' },
 ];
 const MAX_MODEL_OPTIONS = ['', 'cheap', 'mid', 'top', 'max'] as const;
+const AUTONOMY_OPTIONS: { label: string; value: string }[] = [
+  { label: 'Standard — auto-grant safe, gate the dangerous', value: '' },
+  { label: 'Full (--yolo) — never ask, allow everything', value: 'full' },
+  { label: 'Careful — read & plan, gate edits', value: 'careful' },
+];
 
 function TaskComposer({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState('');
   const [repo, setRepo] = useState('');
   const [model, setModel] = useState('');
   const [maxModel, setMaxModel] = useState('');
+  const [autonomy, setAutonomy] = useState('');
   const [repos, setRepos] = useState<{ name: string; path: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -133,10 +139,13 @@ function TaskComposer({ onClose }: { onClose: () => void }) {
     if (!title.trim() || submitting) return;
     setSubmitting(true);
     setError(null);
-    const body: { title: string; repo?: string; model?: string; maxModel?: string } = { title: title.trim() };
+    const body: { title: string; repo?: string; model?: string; maxModel?: string; autonomy?: string } = {
+      title: title.trim(),
+    };
     if (repo) body.repo = repo;
     if (model) body.model = model;
     if (maxModel) body.maxModel = maxModel;
+    if (autonomy) body.autonomy = autonomy;
     try {
       const res = await api.createTask(body);
       if (res && res.ok) {
@@ -201,6 +210,16 @@ function TaskComposer({ onClose }: { onClose: () => void }) {
               {MAX_MODEL_OPTIONS.map((m) => (
                 <option key={m || 'none'} value={m}>
                   {m === '' ? 'none' : m}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Autonomy</span>
+            <select value={autonomy} onChange={(e) => setAutonomy(e.target.value)}>
+              {AUTONOMY_OPTIONS.map((a) => (
+                <option key={a.value || 'standard'} value={a.value}>
+                  {a.label}
                 </option>
               ))}
             </select>

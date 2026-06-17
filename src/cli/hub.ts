@@ -6,7 +6,7 @@
 import path from 'node:path';
 import { loadConfig, repoConfig, statePath, CORTEX_HOME } from '../core/config.js';
 import { CoordinationStore } from '../core/store.js';
-import type { CortexConfig, PlannedSubtask, RoutingDecision, TaskRecord, Tier } from '../shared/types.js';
+import type { Autonomy, CortexConfig, PlannedSubtask, RoutingDecision, TaskRecord, Tier } from '../shared/types.js';
 import { routeTask, escalate } from '../core/router.js';
 import { ModelClient } from '../core/modelClient.js';
 import { CliModelClient } from '../core/cliClient.js';
@@ -20,6 +20,7 @@ import { modelForTier } from '../core/models.js';
 export interface DispatchOpts {
   model?: string;
   maxModel?: Tier;
+  autonomy?: Autonomy;
 }
 
 let seq = 0;
@@ -84,6 +85,7 @@ export class Hub {
     if (!rc) throw new Error(`Unknown repo "${repoName}". Run \`cortex init <path>\` first.`);
 
     const maxModel: Tier = opts.maxModel ?? rc.maxModel ?? this.config.maxModel;
+    const autonomy: Autonomy = opts.autonomy ?? rc.autonomy ?? this.config.autonomy;
     const taskId = genId('task');
 
     const decision = await routeTask({
@@ -121,7 +123,7 @@ export class Hub {
     const memoryContext = retrieval.hits.length ? retrieval.renderContext(retrieval.hits) : '';
 
     // Fire-and-forget execution; status is observable via store events.
-    void this.executeTask(task, rc.path, memoryContext, maxModel, decision).catch((err: unknown) => {
+    void this.executeTask(task, rc.path, memoryContext, maxModel, autonomy, decision).catch((err: unknown) => {
       this.store.setTaskStatus(taskId, 'failed');
       this.store.append({
         ts: Date.now(),
@@ -139,6 +141,7 @@ export class Hub {
     repoPath: string,
     memoryContext: string,
     maxModel: Tier,
+    autonomy: Autonomy,
     decision: RoutingDecision,
   ): Promise<void> {
     if (needsPlanning(task.title)) {
@@ -147,7 +150,7 @@ export class Hub {
       const plan = await this.orchestrator.plan(task, memoryContext);
       this.store.setTaskStatus(task.id, 'running');
       const results = await Promise.all(
-        plan.subtasks.map((sub) => this.runSubtask(task, sub, repoPath, memoryContext, maxModel)),
+        plan.subtasks.map((sub) => this.runSubtask(task, sub, repoPath, memoryContext, maxModel, autonomy)),
       );
       const ok = results.every(Boolean);
       this.store.setTaskStatus(task.id, ok ? 'awaiting-merge' : 'failed');
@@ -165,7 +168,7 @@ export class Hub {
         ownership: ['**'],
         suggestedTier: decision.tier,
       };
-      const ok = await this.runSubtask(task, sub, repoPath, memoryContext, maxModel, decision.model);
+      const ok = await this.runSubtask(task, sub, repoPath, memoryContext, maxModel, autonomy, decision.model);
       this.store.setTaskStatus(task.id, ok ? 'awaiting-merge' : 'failed');
       this.store.append({
         ts: Date.now(),
@@ -183,6 +186,7 @@ export class Hub {
     repoPath: string,
     memoryContext: string,
     maxModel: Tier,
+    autonomy: Autonomy,
     fixedModel?: string,
   ): Promise<boolean> {
     const agentId = genId('agent');
@@ -208,6 +212,7 @@ export class Hub {
         model,
         prompt: digest ? `${sub.prompt}\n\nRecent activity in this repo:\n${digest}` : sub.prompt,
         memoryContext,
+        autonomy,
         ownership: sub.ownership,
         worktree: { worktreePath, branch },
         resumeSessionId,

@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import type { CoordinationStore } from '../core/store.js';
-import type { AgentRecord, AgentToHubMsg, HubToAgentMsg } from '../shared/types.js';
+import type { AgentRecord, AgentToHubMsg, Autonomy, HubToAgentMsg } from '../shared/types.js';
 
 export interface AgentSpawnSpec {
   agentId: string;
@@ -20,6 +20,7 @@ export interface AgentSpawnSpec {
   model: string;
   prompt: string;
   memoryContext: string;
+  autonomy: Autonomy;
   ownership: string[];
   worktree: { worktreePath: string; branch: string };
   resumeSessionId?: string;
@@ -87,6 +88,7 @@ export class AgentManager {
         worktreePath: spec.worktree.worktreePath,
         prompt: spec.prompt,
         memoryContext: spec.memoryContext,
+        autonomy: spec.autonomy,
         sdkSessionId: spec.resumeSessionId,
       }),
     );

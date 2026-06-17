@@ -7,6 +7,11 @@
 
 export type Tier = 'cheap' | 'mid' | 'top' | 'max';
 
+/** How much an agent is allowed to do without a permission gate.
+ *  full = never ask (bypass), standard = auto-grant the safe ~95% & gate the
+ *  dangerous few, careful = read-and-plan (mutations gated). */
+export type Autonomy = 'full' | 'standard' | 'careful';
+
 export interface ModelInfo {
   tier: Tier;
   id: string; // e.g. "claude-haiku-4-5"
@@ -48,6 +53,7 @@ export interface CortexConfig {
   vaultPath: string; // default ~/.cortex/brain
   maxModel: Tier; // highest tier allowed
   defaultTier: Tier;
+  autonomy: Autonomy; // default permission autonomy for agents
   concurrency: number; // max concurrent agents
   dashboardPort: number;
   budget: BudgetConfig;
@@ -58,6 +64,7 @@ export interface RepoConfig {
   name: string;
   path: string;
   maxModel?: Tier;
+  autonomy?: Autonomy; // per-repo override of the global autonomy
   gateCommand?: string; // test/lint gate for merge queue, e.g. "npm test"
   mainBranch?: string; // default "main"
 }

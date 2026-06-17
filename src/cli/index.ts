@@ -132,24 +132,31 @@ program
   .option('-r, --repo <name>', 'repo name (default: the repo containing the current directory)')
   .option('--model <id>', 'force a specific model id')
   .option('--max-model <tier>', 'cap escalation at tier (cheap|mid|top|max)')
+  .option('--yolo', 'full autonomy — never ask for permission, allow everything')
+  .option('--careful', 'careful autonomy — read & plan, gate edits/commands')
   .option('--no-web', 'do not start the dashboard server')
-  .action(async (titleWords: string[], opts: { repo?: string; model?: string; maxModel?: Tier; web: boolean }) => {
-    const title = titleWords.join(' ');
-    const hub = new Hub();
-    await hub.init();
-    const repo = opts.repo ?? (await resolveRepoForCwd(hub.config));
-    if (!repo) {
-      console.error(pc.red('No repo: run cortex inside a git repo, or pass -r <name>.'));
-      process.exit(1);
-    }
+  .action(
+    async (
+      titleWords: string[],
+      opts: { repo?: string; model?: string; maxModel?: Tier; yolo?: boolean; careful?: boolean; web: boolean },
+    ) => {
+      const title = titleWords.join(' ');
+      const hub = new Hub();
+      await hub.init();
+      const repo = opts.repo ?? (await resolveRepoForCwd(hub.config));
+      if (!repo) {
+        console.error(pc.red('No repo: run cortex inside a git repo, or pass -r <name>.'));
+        process.exit(1);
+      }
+      const autonomy = opts.yolo ? 'full' : opts.careful ? 'careful' : undefined;
     if (opts.web) {
       const url = await startDashboard(hub);
       if (url) console.log(pc.dim(`Dashboard: ${url}`));
     }
 
     hub.store.on('event', printEvent);
-    const task = await hub.dispatchTask(title, repo, { model: opts.model, maxModel: opts.maxModel });
-    console.log(pc.bold(`Task ${task.id}: "${title}" → ${task.model} [${task.tier}]`));
+    const task = await hub.dispatchTask(title, repo, { model: opts.model, maxModel: opts.maxModel, autonomy });
+    console.log(pc.bold(`Task ${task.id}: "${title}" → ${task.model} [${task.tier}]${autonomy ? ' · ' + autonomy : ''}`));
 
     await new Promise<void>((resolve) => {
       const check = (e: CortexEvent): void => {

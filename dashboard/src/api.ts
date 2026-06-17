@@ -35,7 +35,7 @@ export const api = {
     fetch('/api/sessions/' + encodeURIComponent(agentId) + '/open-terminal', { method: 'POST' }).then((r) => r.json()),
   reveal: (agentId: string) =>
     fetch('/api/sessions/' + encodeURIComponent(agentId) + '/reveal', { method: 'POST' }).then((r) => r.json()),
-  createTask: (body: { title: string; repo?: string; model?: string; maxModel?: string }) =>
+  createTask: (body: { title: string; repo?: string; model?: string; maxModel?: string; autonomy?: string }) =>
     fetch('/api/tasks', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

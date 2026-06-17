@@ -14,6 +14,7 @@ const DEFAULTS: CortexConfig = {
   vaultPath: path.join(CORTEX_HOME, 'brain'),
   maxModel: 'top',
   defaultTier: 'mid',
+  autonomy: 'standard',
   concurrency: 5,
   dashboardPort: 4242,
   budget: { perTaskUsd: 5, perDayUsd: 25, warnRatio: 0.8 },

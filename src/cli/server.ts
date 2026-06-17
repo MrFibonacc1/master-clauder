@@ -31,7 +31,7 @@ export interface HubLike {
   dispatchTask?(
     title: string,
     repo: string,
-    opts?: { model?: string; maxModel?: string },
+    opts?: { model?: string; maxModel?: string; autonomy?: string },
   ): Promise<unknown> | unknown;
   config?: { repos: Record<string, { name: string; path: string }> };
 }
@@ -205,6 +205,7 @@ export async function startServer(hub: HubLike, port: number): Promise<FastifyIn
       repo?: string;
       model?: string;
       maxModel?: 'cheap' | 'mid' | 'top' | 'max';
+      autonomy?: 'full' | 'standard' | 'careful';
     };
     const title = body.title?.trim();
     if (!title) return reply.code(400).send({ ok: false, error: 'title required' });
@@ -220,7 +221,11 @@ export async function startServer(hub: HubLike, port: number): Promise<FastifyIn
     }
 
     try {
-      const task = await hub.dispatchTask(title, repo, { model: body.model, maxModel: body.maxModel });
+      const task = await hub.dispatchTask(title, repo, {
+        model: body.model,
+        maxModel: body.maxModel,
+        autonomy: body.autonomy,
+      });
       return { ok: true, task };
     } catch (err) {
       return reply.code(400).send({ ok: false, error: err instanceof Error ? err.message : String(err) });

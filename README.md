@@ -54,6 +54,18 @@ Or during development: `pnpm dev <command>` (tsx, no build needed).
 - **Click a repo** (a node in the graph, or a barn in the farm) to open its **session drawer** — every agent that has worked on that repo, with status, model, branch, and cost. Each session has **Open in Claude Code** (runs `claude --resume <sessionId>` in that agent's worktree, so you drop straight back into it), **Reveal** (opens the worktree folder), and a copyable resume command.
 - Also: task board, merge queue, cost dashboard (per agent/task/day vs budget), memory explorer (pin/delete writes back to the vault).
 
+## Autonomy (permissions)
+
+Agents run without pestering you for permission on routine work, while the genuinely dangerous actions are gated. Set globally (`cortex config set autonomy <level>`), per repo (`.cortex.json`), per task (`--yolo` / `--careful`), or in the dashboard composer.
+
+| Level | Behavior |
+|---|---|
+| `standard` (default) | Auto-grants the safe ~95% — reads anywhere, edits/commits inside the worktree, tests, builds, ordinary git. Gates the dangerous few (`git push`, `--force`/`--hard`, `rm -rf`, `reset --hard`, publish, `sudo`, writes outside the worktree) with an actionable message the agent adapts to. |
+| `full` (`--yolo`) | Never asks; allows everything. |
+| `careful` | Read-and-plan: reads and read-only commands allowed; edits and mutating commands gated. |
+
+The policy lives in [`src/core/permissions.ts`](src/core/permissions.ts) and is enforced via the Agent SDK's `canUseTool` hook; gated calls surface as `blocked:<tool>` events in the transcript and dashboard.
+
 ## Model tiers
 
 | Tier | Model | $/MTok in/out |

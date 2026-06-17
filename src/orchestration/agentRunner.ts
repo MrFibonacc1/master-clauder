@@ -7,7 +7,8 @@
 import { readFileSync } from 'node:fs';
 import readline from 'node:readline';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentToHubMsg, HubToAgentMsg } from '../shared/types.js';
+import type { AgentToHubMsg, Autonomy, HubToAgentMsg } from '../shared/types.js';
+import { evaluateTool } from '../core/permissions.js';
 
 export interface AgentRunnerConfig {
   agentId: string;
@@ -16,6 +17,7 @@ export interface AgentRunnerConfig {
   worktreePath: string;
   prompt: string;
   memoryContext: string;
+  autonomy: Autonomy;
   sdkSessionId?: string;
 }
 
@@ -71,13 +73,30 @@ async function main(): Promise<void> {
     .filter(Boolean)
     .join('\n\n');
 
+  const autonomy: Autonomy = cfg.autonomy ?? 'standard';
+  // full → never ask (bypass). standard/careful → gate via canUseTool: auto-grant
+  // the safe majority, deny the dangerous few with an actionable message.
+  const permissionOpts =
+    autonomy === 'full'
+      ? { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }
+      : {
+          permissionMode: 'default' as const,
+          canUseTool: async (toolName: string, input: Record<string, unknown>) => {
+            const decision = evaluateTool(autonomy, toolName, input, cfg.worktreePath);
+            if (decision.behavior === 'deny') {
+              send({ kind: 'tool', name: `blocked:${toolName}`, summary: decision.message });
+              return { behavior: 'deny' as const, message: decision.message };
+            }
+            return { behavior: 'allow' as const, updatedInput: input };
+          },
+        };
+
   const q = query({
     prompt,
     options: {
       model: cfg.model,
       cwd: cfg.worktreePath,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
+      ...permissionOpts,
       ...(cfg.sdkSessionId ? { resume: cfg.sdkSessionId } : {}),
     },
   });
