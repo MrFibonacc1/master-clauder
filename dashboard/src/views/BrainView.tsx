@@ -15,6 +15,7 @@ interface SimNode {
   vy: number;
   r: number;
   ref?: AgentRecord;
+  seeded?: boolean;
 }
 
 interface SimLink {
@@ -44,6 +45,9 @@ export default function BrainView({ status, events }: { status: StatusSnapshot; 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [notes, setNotes] = useState<BrainNote[]>([]);
   const [selected, setSelected] = useState<AgentRecord | null>(null);
+  // Persist node positions/velocities across rebuilds so the layout doesn't snap
+  // back to the spiral every time a status refresh produces new array references.
+  const posRef = useRef<Map<string, SimNode>>(new Map());
 
   useEffect(() => {
     api
@@ -59,7 +63,21 @@ export default function BrainView({ status, events }: { status: StatusSnapshot; 
     const add = (id: string, kind: NodeKind, label: string, r: number, ref?: AgentRecord) => {
       if (index.has(id)) return index.get(id)!;
       index.set(id, nodes.length);
-      nodes.push({ id, kind, label, x: 0, y: 0, vx: 0, vy: 0, r, ref });
+      // Reuse the persisted node (keeps x/y/vx/vy) if we've seen this id before;
+      // only brand-new ids get a fresh, unseeded node placed by the physics effect.
+      const existing = posRef.current.get(id);
+      let node: SimNode;
+      if (existing) {
+        existing.kind = kind;
+        existing.label = label;
+        existing.r = r;
+        existing.ref = ref;
+        node = existing;
+      } else {
+        node = { id, kind, label, x: 0, y: 0, vx: 0, vy: 0, r, ref, seeded: false };
+        posRef.current.set(id, node);
+      }
+      nodes.push(node);
       return nodes.length - 1;
     };
     const links: SimLink[] = [];
@@ -86,6 +104,10 @@ export default function BrainView({ status, events }: { status: StatusSnapshot; 
         if (target) links.push({ a: ni, b: index.get(target)!, len: 80 });
       }
     }
+    // GC persisted nodes whose ids are no longer present.
+    for (const id of [...posRef.current.keys()]) {
+      if (!index.has(id)) posRef.current.delete(id);
+    }
     return { nodes, links };
   }, [status.tasks, status.agents, notes]);
 
@@ -109,12 +131,15 @@ export default function BrainView({ status, events }: { status: StatusSnapshot; 
     const W = () => canvas.width / dpr;
     const H = () => canvas.height / dpr;
 
-    // seed positions deterministically around center
+    // seed positions deterministically around center — only for new (unseeded)
+    // nodes, so existing nodes keep their settled positions across rebuilds.
     graph.nodes.forEach((n, i) => {
+      if (n.seeded) return;
       const angle = (i * 2.399963) % (Math.PI * 2); // golden angle spiral
       const rad = 40 + 16 * Math.sqrt(i);
       n.x = W() / 2 + rad * Math.cos(angle);
       n.y = H() / 2 + rad * Math.sin(angle);
+      n.seeded = true;
     });
 
     let hover: SimNode | null = null;

@@ -42,6 +42,8 @@ const KILL_GRACE_MS = 5000;
 export class AgentManager {
   private running = new Map<string, RunningAgent>();
   private queue: (() => void)[] = [];
+  /** Last cumulative cost (USD) seen per SDK session, for per-turn delta accounting. */
+  private sessionCost = new Map<string, number>();
 
   constructor(
     private store: CoordinationStore,
@@ -178,10 +180,23 @@ export class AgentManager {
       case 'tool':
         this.store.append({ ...base, type: 'agent.tool', payload: { name: msg.name, summary: msg.summary } });
         break;
-      case 'usage':
-        this.store.append({ ...base, type: 'agent.usage', payload: { ...msg.usage } });
-        this.store.recordUsage({ ...msg.usage, taskId: record.taskId, agentId: record.id, ts: Date.now() });
+      case 'usage': {
+        // The SDK reports total_cost_usd cumulatively per session. On a resumed
+        // (escalated) session the cumulative includes earlier turns, so record only
+        // the delta since we last saw this session to avoid double-counting cost.
+        const sid = record.sdkSessionId;
+        let cost = msg.usage.costUsd;
+        if (sid) {
+          const prev = this.sessionCost.get(sid) ?? 0;
+          const delta = Math.max(0, cost - prev);
+          this.sessionCost.set(sid, Math.max(prev, cost));
+          cost = delta;
+        }
+        const usage = { ...msg.usage, costUsd: cost };
+        this.store.append({ ...base, type: 'agent.usage', payload: { ...usage } });
+        this.store.recordUsage({ ...usage, taskId: record.taskId, agentId: record.id, ts: Date.now() });
         break;
+      }
       case 'memory':
         this.store.append({ ...base, type: 'agent.memory', payload: { op: msg.op, relPath: msg.relPath } });
         break;

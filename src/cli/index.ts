@@ -164,8 +164,12 @@ program
     });
 
     // Drain the merge queue before exiting so finished branches land on main.
+    // Stop the background interval first so this loop is the SOLE writer to main —
+    // otherwise the timer's processNext() can interleave git checkout/merge on the
+    // shared main checkout and corrupt the working tree / misreport conflicts.
     let final = hub.store.getTask(task.id);
     if (final?.status === 'awaiting-merge') {
+      hub.mergeQueue.stop();
       while (hub.store.nextQueuedMerge(task.repo)) {
         await hub.mergeQueue.processNext();
       }

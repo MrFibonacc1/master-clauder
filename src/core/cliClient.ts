@@ -95,10 +95,40 @@ export class CliModelClient {
   }
 }
 
-/** Pull the first top-level JSON object out of model text (tolerates fences/prose). */
+/**
+ * Pull the first VALID JSON object out of model text (tolerates fences/prose).
+ * Prefers a fenced ```json block, then tries each `{` candidate and returns the
+ * first brace-balanced substring that actually parses — so a stray brace in prose
+ * before the real object doesn't yield un-parseable garbage. Falls back to the
+ * original text unchanged (best-effort contract; callers still wrap in try/catch).
+ */
 export function extractJson(text: string): string {
-  const start = text.indexOf('{');
-  if (start === -1) return text;
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) {
+    const inner = extractFirstParseable(fenced[1]);
+    if (inner) return inner;
+  }
+  return extractFirstParseable(text) ?? text;
+}
+
+/** Scan from each `{`, return the first brace-balanced substring that JSON.parses. */
+function extractFirstParseable(text: string): string | null {
+  for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    const candidate = balancedObject(text, start);
+    if (candidate) {
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {
+        /* not valid JSON from this brace; try the next */
+      }
+    }
+  }
+  return null;
+}
+
+/** Return the brace-balanced substring starting at `start`, or null if unbalanced. */
+function balancedObject(text: string, start: number): string | null {
   let depth = 0;
   let inStr = false;
   let esc = false;
@@ -118,5 +148,5 @@ export function extractJson(text: string): string {
       if (depth === 0) return text.slice(start, i + 1);
     }
   }
-  return text.slice(start);
+  return null;
 }
