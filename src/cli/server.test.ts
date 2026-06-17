@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { CoordinationStore } from '../core/store.js';
-import { startServer, type HubLike } from './server.js';
+import { startServer, buildResumeCommand, type HubLike } from './server.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cortex-test-'));
 const store = new CoordinationStore(path.join(tmp, 'state.db'));
@@ -132,6 +132,88 @@ describe('server', () => {
     const body = (await res.json()) as { ok: boolean; error: string };
     expect(body).toEqual({ ok: false, error: 'title required' });
   });
+
+  it('GET /api/repos/:name/agents returns the repo agents with mapped shape', async () => {
+    const startedAt = Date.now();
+    store.upsertTask({
+      id: 'task_sess',
+      title: 'wire up sessions',
+      status: 'running',
+      tier: 'mid',
+      model: 'claude-mid',
+      repo: 'app',
+      createdAt: startedAt,
+      updatedAt: startedAt,
+    });
+    store.upsertAgent({
+      id: 'agent_sess',
+      name: 'agent-sess',
+      taskId: 'task_sess',
+      repo: 'app',
+      worktreePath: '/tmp/worktrees/agent_sess',
+      branch: 'cortex/agent-sess',
+      model: 'claude-mid',
+      status: 'working',
+      sdkSessionId: 'sdk-abc-123',
+      startedAt,
+    });
+    // An agent on a different repo should be filtered out.
+    store.upsertAgent({
+      id: 'agent_other',
+      name: 'agent-other',
+      taskId: 'task_sess',
+      repo: 'web',
+      model: 'claude-mid',
+      status: 'done',
+      startedAt: startedAt - 1000,
+    });
+    store.recordUsage({
+      taskId: 'task_sess',
+      agentId: 'agent_sess',
+      model: 'claude-mid',
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd: 0.42,
+      ts: startedAt,
+    });
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/repos/app/agents`);
+    expect(res.status).toBe(200);
+    const agents = (await res.json()) as {
+      id: string;
+      sdkSessionId?: string;
+      worktreePath?: string;
+      taskTitle: string;
+      cost: number;
+    }[];
+    const found = agents.find((a) => a.id === 'agent_sess');
+    expect(found).toBeTruthy();
+    expect(found?.sdkSessionId).toBe('sdk-abc-123');
+    expect(found?.worktreePath).toBe('/tmp/worktrees/agent_sess');
+    expect(found?.taskTitle).toBe('wire up sessions');
+    expect(found?.cost).toBe(0.42);
+    expect(agents.some((a) => a.id === 'agent_other')).toBe(false);
+  });
+
+  it('buildResumeCommand builds a copy-paste-safe resume command', () => {
+    expect(buildResumeCommand('/tmp/wt', 'sid-9')).toBe("cd '/tmp/wt' && claude --resume sid-9");
+    expect(buildResumeCommand('/tmp/wt')).toBe("cd '/tmp/wt'");
+    // Single quotes in the path are escaped so the shell command stays valid.
+    expect(buildResumeCommand("/tmp/it's here")).toBe("cd '/tmp/it'\\''s here'");
+  });
+
+  it('POST /api/sessions/:id/open-terminal returns ok:false for a missing agent', async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/sessions/nope/open-terminal`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body).toEqual({ ok: false, error: 'agent not found' });
+  });
+
+  // The success path (agent with worktree + sdkSessionId -> ok:true, command
+  // contains `claude --resume <sid>` and the worktree path) is covered by the
+  // buildResumeCommand unit test above so the suite never launches a terminal.
 });
 
 describe('server with multiple repos', () => {

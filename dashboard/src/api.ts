@@ -1,4 +1,4 @@
-import type { AgentRecord, CortexEvent, CostSummary, MemoryHit, MergeItem, StatusSnapshot, TaskRecord } from './types';
+import type { AgentRecord, CortexEvent, CostSummary, MemoryHit, MergeItem, RepoAgent, StatusSnapshot, TaskRecord } from './types';
 
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -30,6 +30,11 @@ export const api = {
   agentAction: (id: string, action: 'pause' | 'resume' | 'kill') =>
     fetch(`/api/agents/${id}/${action}`, { method: 'POST' }),
   repos: () => get<{ name: string; path: string }[]>('/api/repos'),
+  repoAgents: (name: string) => get<RepoAgent[]>('/api/repos/' + encodeURIComponent(name) + '/agents'),
+  openTerminal: (agentId: string) =>
+    fetch('/api/sessions/' + encodeURIComponent(agentId) + '/open-terminal', { method: 'POST' }).then((r) => r.json()),
+  reveal: (agentId: string) =>
+    fetch('/api/sessions/' + encodeURIComponent(agentId) + '/reveal', { method: 'POST' }).then((r) => r.json()),
   createTask: (body: { title: string; repo?: string; model?: string; maxModel?: string }) =>
     fetch('/api/tasks', {
       method: 'POST',

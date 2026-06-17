@@ -51,6 +51,7 @@ Or during development: `pnpm dev <command>` (tsx, no build needed).
 - **Two switchable agent visualizations** (tabs, last choice remembered):
   - **Brain** — Obsidian-style glowing force graph: agents, repos, tasks, memory notes.
   - **Farm** — an isometric farm where each agent is a worker in its repo's plot. Status reads from what they're *doing*: working = swinging a hoe + growing crops, blocked = frozen with a red "!", paused = sitting with "Zzz", done = green ✓ + a golden sheaf, failed = slumped with smoke. Click a worker for its live transcript, model, cost, and branch.
+- **Click a repo** (a node in the graph, or a barn in the farm) to open its **session drawer** — every agent that has worked on that repo, with status, model, branch, and cost. Each session has **Open in Claude Code** (runs `claude --resume <sessionId>` in that agent's worktree, so you drop straight back into it), **Reveal** (opens the worktree folder), and a copyable resume command.
 - Also: task board, merge queue, cost dashboard (per agent/task/day vs budget), memory explorer (pin/delete writes back to the vault).
 
 ## Model tiers

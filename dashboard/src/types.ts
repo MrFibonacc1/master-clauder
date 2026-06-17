@@ -35,6 +35,20 @@ export interface AgentRecord {
   model: string;
   status: AgentStatus;
   startedAt: number;
+  sdkSessionId?: string;
+}
+
+export interface RepoAgent {
+  id: string;
+  name: string;
+  status: AgentStatus;
+  model: string;
+  branch?: string;
+  worktreePath?: string;
+  sdkSessionId?: string;
+  taskId: string;
+  taskTitle: string;
+  cost: number;
 }
 
 export interface CortexEvent {

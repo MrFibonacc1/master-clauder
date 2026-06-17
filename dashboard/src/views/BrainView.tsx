@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import type { AgentRecord, BrainNote, CortexEvent, StatusSnapshot } from '../types';
 import AgentDrawer from './AgentDrawer';
+import RepoDrawer from './RepoDrawer';
 
 type NodeKind = 'agent' | 'repo' | 'task' | 'note';
 
@@ -45,6 +46,7 @@ export default function BrainView({ status, events }: { status: StatusSnapshot; 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [notes, setNotes] = useState<BrainNote[]>([]);
   const [selected, setSelected] = useState<AgentRecord | null>(null);
+  const [repoSel, setRepoSel] = useState<string | null>(null);
   // Persist node positions/velocities across rebuilds so the layout doesn't snap
   // back to the spiral every time a status refresh produces new array references.
   const posRef = useRef<Map<string, SimNode>>(new Map());
@@ -293,7 +295,13 @@ export default function BrainView({ status, events }: { status: StatusSnapshot; 
     const onClick = (e: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
       const n = pick(e.clientX - rect.left, e.clientY - rect.top);
-      setSelected(n?.kind === 'agent' && n.ref ? n.ref : null);
+      if (n?.kind === 'repo') {
+        setRepoSel(n.label);
+        setSelected(null);
+      } else {
+        setRepoSel(null);
+        setSelected(n?.kind === 'agent' && n.ref ? n.ref : null);
+      }
     };
     canvas.addEventListener('mousemove', onMove);
     canvas.addEventListener('click', onClick);
@@ -320,6 +328,7 @@ export default function BrainView({ status, events }: { status: StatusSnapshot; 
         <span><span className="dot" style={{ background: '#3a3f55' }} />memory note</span>
       </div>
       {selected && <AgentDrawer agent={selected} events={events} status={status} onClose={() => setSelected(null)} />}
+      {!selected && repoSel && <RepoDrawer repo={repoSel} onClose={() => setRepoSel(null)} />}
     </div>
   );
 }

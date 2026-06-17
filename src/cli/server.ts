@@ -4,6 +4,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyWebsocket from '@fastify/websocket';
@@ -39,6 +40,21 @@ const FALLBACK_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>C
 <style>body{background:#0d0e14;color:#aab;font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0}
 code{color:#7df;background:#181a24;padding:2px 8px;border-radius:6px}</style></head>
 <body><div><h1>Cortex dashboard not built</h1><p>Run <code>pnpm --dir dashboard build</code> then restart.</p></div></body></html>`;
+
+/** Single-quote a path for safe copy-paste into a POSIX shell. */
+function shellQuote(p: string): string {
+  return `'${p.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Build the shell command to drop into an agent's worktree, optionally resuming
+ * its Claude Code SDK session. The worktree path is single-quoted so the string
+ * is copy-paste-safe.
+ */
+export function buildResumeCommand(worktreePath: string, sdkSessionId?: string): string {
+  const cd = `cd ${shellQuote(worktreePath)}`;
+  return sdkSessionId ? `${cd} && claude --resume ${sdkSessionId}` : cd;
+}
 
 export async function startServer(hub: HubLike, port: number): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
@@ -91,6 +107,96 @@ export async function startServer(hub: HubLike, port: number): Promise<FastifyIn
   app.get('/api/repos', async () => {
     if (!hub.config) return [];
     return Object.values(hub.config.repos).map((r) => ({ name: r.name, path: r.path }));
+  });
+
+  // ---- repo sessions (agents) ----
+  app.get('/api/repos/:name/agents', async (req) => {
+    if (!hub.store) return [];
+    const { name } = req.params as { name: string };
+    const costs = hub.store.costSummary().byAgent;
+    return hub.store
+      .listAgents()
+      .filter((a) => a.repo === name)
+      .sort((a, b) => b.startedAt - a.startedAt)
+      .map((a) => ({
+        id: a.id,
+        name: a.name,
+        status: a.status,
+        model: a.model,
+        branch: a.branch,
+        worktreePath: a.worktreePath,
+        sdkSessionId: a.sdkSessionId,
+        taskId: a.taskId,
+        taskTitle: hub.store.getTask(a.taskId)?.title ?? '',
+        cost: costs[a.id] ?? 0,
+      }));
+  });
+
+  // Resolve the worktree for an agent, or send the appropriate error reply.
+  // Returns undefined after replying when the agent/worktree is missing.
+  const resolveWorktree = (
+    agentId: string,
+    reply: { code(c: number): { send(b: unknown): unknown } },
+  ): { worktreePath: string; sdkSessionId?: string } | undefined => {
+    const agent = hub.store.getAgent(agentId);
+    if (!agent) {
+      reply.code(404).send({ ok: false, error: 'agent not found' });
+      return undefined;
+    }
+    if (!agent.worktreePath) {
+      reply.code(200).send({ ok: false, error: 'agent has no worktree' });
+      return undefined;
+    }
+    return { worktreePath: agent.worktreePath, sdkSessionId: agent.sdkSessionId };
+  };
+
+  // Open the agent's worktree in a terminal running Claude Code (best-effort).
+  app.post('/api/sessions/:agentId/open-terminal', async (req, reply) => {
+    const { agentId } = req.params as { agentId: string };
+    const wt = resolveWorktree(agentId, reply);
+    if (!wt) return reply;
+
+    const command = buildResumeCommand(wt.worktreePath, wt.sdkSessionId);
+    let opened = false;
+    try {
+      if (process.platform === 'darwin') {
+        // The command is embedded as an AppleScript string literal; escape
+        // backslashes first, then double-quotes, so the do script arg is valid.
+        const escaped = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const tellTerminalScript = `tell application "Terminal" to do script "${escaped}"`;
+        await new Promise<void>((resolve, reject) => {
+          execFile(
+            'osascript',
+            ['-e', tellTerminalScript, '-e', 'tell application "Terminal" to activate'],
+            (err) => (err ? reject(err) : resolve()),
+          );
+        });
+        opened = true;
+      }
+      // linux: launching a terminal is unreliable; just return the command.
+    } catch {
+      opened = false;
+    }
+    return { ok: true, command, opened };
+  });
+
+  // Reveal the agent's worktree folder in the OS file manager (best-effort).
+  app.post('/api/sessions/:agentId/reveal', async (req, reply) => {
+    const { agentId } = req.params as { agentId: string };
+    const wt = resolveWorktree(agentId, reply);
+    if (!wt) return reply;
+
+    let opened = false;
+    try {
+      const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+      await new Promise<void>((resolve, reject) => {
+        execFile(opener, [wt.worktreePath], (err) => (err ? reject(err) : resolve()));
+      });
+      opened = true;
+    } catch {
+      opened = false;
+    }
+    return { ok: true, opened, path: wt.worktreePath };
   });
 
   app.post('/api/tasks', async (req, reply) => {

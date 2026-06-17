@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentRecord, CortexEvent, StatusSnapshot, TaskRecord } from '../types';
 import AgentDrawer from './AgentDrawer';
+import RepoDrawer from './RepoDrawer';
 
 // ---- palette (from spec Â§6) ----
 const C = {
@@ -138,6 +139,7 @@ function toolGlyph(name: string): string {
 export default function FarmView({ status, events }: { status: StatusSnapshot; events: CortexEvent[] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [selected, setSelected] = useState<AgentRecord | null>(null);
+  const [repoSel, setRepoSel] = useState<string | null>(null);
 
   // persistent per-agent animation state across renders/frames
   const wsRef = useRef<Map<string, WorkerState>>(new Map());
@@ -1218,12 +1220,21 @@ export default function FarmView({ status, events }: { status: StatusSnapshot; e
       const hit = pick(mx, my);
       hoverId = hit?.id ?? null;
       hoverRepo = hit ? null : pickRepo(mx, my);
-      canvas.style.cursor = hit ? 'pointer' : 'default';
+      canvas.style.cursor = hit || hoverRepo ? 'pointer' : 'default';
     };
     const onClick = (ev: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
-      const hit = pick(ev.clientX - rect.left, ev.clientY - rect.top);
-      setSelected(hit ?? null);
+      const mx = ev.clientX - rect.left;
+      const my = ev.clientY - rect.top;
+      const hit = pick(mx, my);
+      if (hit) {
+        setSelected(hit);
+        setRepoSel(null);
+        return;
+      }
+      const repo = pickRepo(mx, my);
+      setSelected(null);
+      setRepoSel(repo);
     };
     canvas.addEventListener('mousemove', onMove);
     canvas.addEventListener('click', onClick);
@@ -1250,6 +1261,7 @@ export default function FarmView({ status, events }: { status: StatusSnapshot; e
         <span><span className="dot" style={{ background: C.muted }} />killed (scarecrow)</span>
       </div>
       {selected && <AgentDrawer agent={selected} events={events} status={status} onClose={() => setSelected(null)} />}
+      {!selected && repoSel && <RepoDrawer repo={repoSel} onClose={() => setRepoSel(null)} />}
     </div>
   );
 }
