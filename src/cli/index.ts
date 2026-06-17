@@ -134,11 +134,20 @@ program
   .option('--max-model <tier>', 'cap escalation at tier (cheap|mid|top|max)')
   .option('--yolo', 'full autonomy — never ask for permission, allow everything')
   .option('--careful', 'careful autonomy — read & plan, gate edits/commands')
+  .option('--review', 'park finished work for human diff review before merging')
   .option('--no-web', 'do not start the dashboard server')
   .action(
     async (
       titleWords: string[],
-      opts: { repo?: string; model?: string; maxModel?: Tier; yolo?: boolean; careful?: boolean; web: boolean },
+      opts: {
+        repo?: string;
+        model?: string;
+        maxModel?: Tier;
+        yolo?: boolean;
+        careful?: boolean;
+        review?: boolean;
+        web: boolean;
+      },
     ) => {
       const title = titleWords.join(' ');
       const hub = new Hub();
@@ -155,14 +164,19 @@ program
     }
 
     hub.store.on('event', printEvent);
-    const task = await hub.dispatchTask(title, repo, { model: opts.model, maxModel: opts.maxModel, autonomy });
+    const task = await hub.dispatchTask(title, repo, {
+      model: opts.model,
+      maxModel: opts.maxModel,
+      autonomy,
+      reviewBeforeMerge: opts.review,
+    });
     console.log(pc.bold(`Task ${task.id}: "${title}" → ${task.model} [${task.tier}]${autonomy ? ' · ' + autonomy : ''}`));
 
     await new Promise<void>((resolve) => {
       const check = (e: CortexEvent): void => {
         if (e.taskId !== task.id || e.type !== 'task.status') return;
         const s = e.payload.status;
-        if (s === 'done' || s === 'failed' || s === 'killed' || s === 'awaiting-merge') {
+        if (s === 'done' || s === 'failed' || s === 'killed' || s === 'awaiting-merge' || s === 'needs-review') {
           hub.store.off('event', check);
           resolve();
         }
@@ -175,6 +189,12 @@ program
     // otherwise the timer's processNext() can interleave git checkout/merge on the
     // shared main checkout and corrupt the working tree / misreport conflicts.
     let final = hub.store.getTask(task.id);
+    if (final?.status === 'needs-review') {
+      const url = `http://localhost:${hub.config.dashboardPort}`;
+      console.log(pc.yellow(`\nParked for review — open ${url} (Review tab) to approve or request changes.`));
+      await hub.shutdown();
+      process.exit(0);
+    }
     if (final?.status === 'awaiting-merge') {
       hub.mergeQueue.stop();
       while (hub.store.nextQueuedMerge(task.repo)) {

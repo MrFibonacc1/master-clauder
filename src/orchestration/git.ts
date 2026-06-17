@@ -48,11 +48,12 @@ export class GitManager {
     repoName: string,
     agentName: string,
     taskSlug: string,
+    mainBranch = 'main',
   ): Promise<WorktreeInfo> {
     const branch = `agent/${slugify(agentName)}/${slugify(taskSlug)}`;
     const branchSafeName = branch.replace(/\//g, '-');
     const worktreePath = path.join(path.dirname(repoPath), '.cortex-worktrees', repoName, branchSafeName);
-    await git(['worktree', 'add', '-b', branch, worktreePath, 'main'], repoPath);
+    await git(['worktree', 'add', '-b', branch, worktreePath, mainBranch], repoPath);
     return { worktreePath, branch };
   }
 
@@ -128,5 +129,17 @@ export class GitManager {
   async changedFiles(worktreePath: string, mainBranch: string): Promise<string[]> {
     const { stdout } = await git(['diff', '--name-only', `${mainBranch}...HEAD`], worktreePath);
     return stdout.split('\n').filter(Boolean);
+  }
+
+  /** Per-file added/removed line counts (git diff --numstat). Binary files report 0/0. */
+  async diffStat(worktreePath: string, mainBranch: string): Promise<{ file: string; additions: number; deletions: number }[]> {
+    const { stdout } = await git(['diff', '--numstat', `${mainBranch}...HEAD`], worktreePath);
+    return stdout
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [add, del, ...rest] = line.split('\t');
+        return { file: rest.join('\t'), additions: Number(add) || 0, deletions: Number(del) || 0 };
+      });
   }
 }

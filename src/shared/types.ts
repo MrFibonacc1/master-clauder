@@ -54,6 +54,7 @@ export interface CortexConfig {
   maxModel: Tier; // highest tier allowed
   defaultTier: Tier;
   autonomy: Autonomy; // default permission autonomy for agents
+  reviewBeforeMerge: boolean; // if true, finished agents park for human diff review before merging
   concurrency: number; // max concurrent agents
   dashboardPort: number;
   budget: BudgetConfig;
@@ -65,8 +66,39 @@ export interface RepoConfig {
   path: string;
   maxModel?: Tier;
   autonomy?: Autonomy; // per-repo override of the global autonomy
+  reviewBeforeMerge?: boolean; // per-repo override of review-before-merge
   gateCommand?: string; // test/lint gate for merge queue, e.g. "npm test"
   mainBranch?: string; // default "main"
+}
+
+// ---------- Diff review (A1) ----------
+
+export interface DiffStat {
+  file: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface AgentDiff {
+  agentId: string;
+  branch?: string;
+  files: DiffStat[];
+  patch: string;
+}
+
+export type ReviewDecision = 'approve' | 'request-changes';
+
+/** A finished agent parked awaiting human review (reviewBeforeMerge). */
+export interface ReviewInfo {
+  agentId: string;
+  agentName: string;
+  taskId: string;
+  taskTitle: string;
+  repo: string;
+  branch: string;
+  model: string;
+  summary: string;
+  parkedAt: number;
 }
 
 // ---------- Tasks & coordination ----------
@@ -76,6 +108,7 @@ export type TaskStatus =
   | 'planning'
   | 'running'
   | 'blocked'
+  | 'needs-review'
   | 'awaiting-merge'
   | 'done'
   | 'failed'
@@ -102,7 +135,15 @@ export interface Claim {
   releasedAt?: number;
 }
 
-export type AgentStatus = 'starting' | 'working' | 'blocked' | 'paused' | 'done' | 'failed' | 'killed';
+export type AgentStatus =
+  | 'starting'
+  | 'working'
+  | 'blocked'
+  | 'paused'
+  | 'needs-review'
+  | 'done'
+  | 'failed'
+  | 'killed';
 
 export interface AgentRecord {
   id: string;
