@@ -255,3 +255,117 @@ describe('server with multiple repos', () => {
     expect(body).toEqual({ ok: false, error: 'repo required (multiple repos registered)' });
   });
 });
+
+describe('server review-before-merge (A1)', () => {
+  let reviewApp: FastifyInstance;
+  let reviewPort: number;
+  const reviewStore = new CoordinationStore(path.join(tmp, 'state-review.db'));
+
+  const review = {
+    agentId: 'agent_rev',
+    agentName: 'agent-rev',
+    taskId: 'task_rev',
+    taskTitle: 'add a flag',
+    repo: 'app',
+    branch: 'agent/agent-rev/add-a-flag',
+    model: 'claude-mid',
+    summary: 'added the flag',
+    parkedAt: 1000,
+  };
+
+  const approveSpy = vi.fn((id: string) => id === review.agentId);
+  const requestChangesSpy = vi.fn((id: string, _comments: string) => id === review.agentId);
+
+  const reviewGit: HubLike['git'] = {
+    diffAgainstMain: async () => 'diff --git a/x b/x\n+hello\n',
+    changedFiles: async () => ['x'],
+    diffStat: async () => [{ file: 'x', additions: 1, deletions: 0 }],
+  };
+
+  beforeAll(async () => {
+    const reviewHub: HubLike = {
+      status: () => ({ tasks: [], agents: [], costs: { byTask: {}, byAgent: {}, total: 0 } }),
+      store: reviewStore,
+      brain: fakeBrain,
+      config: { repos: { app: { name: 'app', path: '/repos/app' } } },
+      listReviews: () => [review],
+      reviewWorktree: (id) =>
+        id === review.agentId ? { worktreePath: '/tmp/wt/agent_rev', mainBranch: 'main' } : undefined,
+      approveReview: approveSpy,
+      requestChanges: requestChangesSpy,
+      git: reviewGit,
+    };
+    reviewApp = await startServer(reviewHub, 0);
+    const addr = reviewApp.server.address();
+    reviewPort = typeof addr === 'object' && addr ? addr.port : 0;
+  });
+
+  afterAll(async () => {
+    await reviewApp.close();
+    reviewStore.close();
+  });
+
+  it('GET /api/reviews returns the parked reviews', async () => {
+    const res = await fetch(`http://127.0.0.1:${reviewPort}/api/reviews`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { agentId: string; branch: string }[];
+    expect(body).toEqual([review]);
+  });
+
+  it('GET /api/agents/:id/diff returns files and patch', async () => {
+    const res = await fetch(`http://127.0.0.1:${reviewPort}/api/agents/${review.agentId}/diff`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      agentId: string;
+      branch?: string;
+      files: { file: string; additions: number; deletions: number }[];
+      patch: string;
+    };
+    expect(body.agentId).toBe(review.agentId);
+    expect(body.branch).toBe(review.branch);
+    expect(body.files).toEqual([{ file: 'x', additions: 1, deletions: 0 }]);
+    expect(body.patch).toContain('+hello');
+  });
+
+  it('GET /api/agents/:id/diff returns 404 for an unknown agent', async () => {
+    const res = await fetch(`http://127.0.0.1:${reviewPort}/api/agents/nope/diff`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body).toEqual({ ok: false, error: 'no review for agent' });
+  });
+
+  it('POST /api/agents/:id/review approve calls approveReview and returns ok', async () => {
+    approveSpy.mockClear();
+    const res = await fetch(`http://127.0.0.1:${reviewPort}/api/agents/${review.agentId}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean };
+    expect(body).toEqual({ ok: true });
+    expect(approveSpy).toHaveBeenCalledWith(review.agentId);
+  });
+
+  it('POST /api/agents/:id/review request-changes without comments returns 400', async () => {
+    const res = await fetch(`http://127.0.0.1:${reviewPort}/api/agents/${review.agentId}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'request-changes' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body).toEqual({ ok: false, error: 'comments required' });
+  });
+
+  it('POST /api/agents/:id/review approve for unknown agent returns 404', async () => {
+    const res = await fetch(`http://127.0.0.1:${reviewPort}/api/agents/nope/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve' }),
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body).toEqual({ ok: false, error: 'no review for agent' });
+  });
+});

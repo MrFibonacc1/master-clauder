@@ -1,4 +1,4 @@
-import type { AgentRecord, CortexEvent, CostSummary, MemoryHit, MergeItem, RepoAgent, StatusSnapshot, TaskRecord } from './types';
+import type { AgentDiff, AgentRecord, CortexEvent, CostSummary, MemoryHit, MergeItem, RepoAgent, ReviewInfo, StatusSnapshot, TaskRecord } from './types';
 
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -35,13 +35,28 @@ export const api = {
     fetch('/api/sessions/' + encodeURIComponent(agentId) + '/open-terminal', { method: 'POST' }).then((r) => r.json()),
   reveal: (agentId: string) =>
     fetch('/api/sessions/' + encodeURIComponent(agentId) + '/reveal', { method: 'POST' }).then((r) => r.json()),
-  createTask: (body: { title: string; repo?: string; model?: string; maxModel?: string; autonomy?: string }) =>
+  createTask: (body: {
+    title: string;
+    repo?: string;
+    model?: string;
+    maxModel?: string;
+    autonomy?: string;
+    reviewBeforeMerge?: boolean;
+  }) =>
     fetch('/api/tasks', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => r.json()),
   pauseAll: () => fetch('/api/agents/pause-all', { method: 'POST' }),
+  reviews: () => get<ReviewInfo[]>('/api/reviews'),
+  agentDiff: (id: string) => get<AgentDiff>('/api/agents/' + encodeURIComponent(id) + '/diff'),
+  review: (id: string, decision: 'approve' | 'request-changes', comments?: string) =>
+    fetch('/api/agents/' + encodeURIComponent(id) + '/review', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision, comments }),
+    }).then((r) => r.json()),
 };
 
 export function openEventStream(onSnapshot: (s: StatusSnapshot) => void, onEvent: (e: CortexEvent) => void): () => void {

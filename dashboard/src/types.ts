@@ -6,6 +6,7 @@ export type TaskStatus =
   | 'running'
   | 'blocked'
   | 'awaiting-merge'
+  | 'needs-review'
   | 'done'
   | 'failed'
   | 'killed';
@@ -23,7 +24,15 @@ export interface TaskRecord {
   updatedAt: number;
 }
 
-export type AgentStatus = 'starting' | 'working' | 'blocked' | 'paused' | 'done' | 'failed' | 'killed';
+export type AgentStatus =
+  | 'starting'
+  | 'working'
+  | 'blocked'
+  | 'paused'
+  | 'needs-review'
+  | 'done'
+  | 'failed'
+  | 'killed';
 
 export interface AgentRecord {
   id: string;
@@ -102,6 +111,31 @@ export interface StatusSnapshot {
   daySpendUsd: number;
   budget: { perTaskUsd: number; perDayUsd: number; warnRatio: number };
   mergeQueue: MergeItem[];
+}
+
+export interface ReviewInfo {
+  agentId: string;
+  agentName: string;
+  taskId: string;
+  taskTitle: string;
+  repo: string;
+  branch: string;
+  model: string;
+  summary: string;
+  parkedAt: number;
+}
+
+export interface DiffStat {
+  file: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface AgentDiff {
+  agentId: string;
+  branch?: string;
+  files: DiffStat[];
+  patch: string;
 }
 
 export interface RoutingDecisionRow {

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
-import type { CortexEvent } from '../shared/types.js';
+import type { AgentDiff, CortexEvent, DiffStat, ReviewInfo } from '../shared/types.js';
 import type { Hub } from './hub.js';
 
 /** The subset of Hub the server needs (lets tests pass a stub). */
@@ -31,9 +31,22 @@ export interface HubLike {
   dispatchTask?(
     title: string,
     repo: string,
-    opts?: { model?: string; maxModel?: string; autonomy?: string },
+    opts?: { model?: string; maxModel?: string; autonomy?: string; reviewBeforeMerge?: boolean },
   ): Promise<unknown> | unknown;
   config?: { repos: Record<string, { name: string; path: string }> };
+  // ---- review-before-merge (A1) ----
+  listReviews?(): ReviewInfo[];
+  reviewWorktree?(id: string): { worktreePath: string; mainBranch: string } | undefined;
+  approveReview?(id: string): boolean;
+  requestChanges?(id: string, comments: string): boolean;
+  git?: Hub['git'];
+}
+
+/** Cap a diff patch to avoid huge payloads; note when truncated. */
+const MAX_PATCH_BYTES = 200 * 1024;
+function capPatch(patch: string): string {
+  if (patch.length <= MAX_PATCH_BYTES) return patch;
+  return `${patch.slice(0, MAX_PATCH_BYTES)}\n... [diff truncated at ${MAX_PATCH_BYTES} bytes]`;
 }
 
 const FALLBACK_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Cortex</title>
@@ -107,6 +120,49 @@ export async function startServer(hub: HubLike, port: number): Promise<FastifyIn
   app.get('/api/repos', async () => {
     if (!hub.config) return [];
     return Object.values(hub.config.repos).map((r) => ({ name: r.name, path: r.path }));
+  });
+
+  // ---- review-before-merge (A1) ----
+  app.get('/api/reviews', async () => hub.listReviews?.() ?? []);
+
+  app.get('/api/agents/:id/diff', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const wt = hub.reviewWorktree?.(id);
+    if (!wt || !hub.git) {
+      return reply.code(404).send({ ok: false, error: 'no review for agent' });
+    }
+    try {
+      const files: DiffStat[] = await hub.git.diffStat(wt.worktreePath, wt.mainBranch);
+      const patch = capPatch(await hub.git.diffAgainstMain(wt.worktreePath, wt.mainBranch));
+      const branch = hub.listReviews?.().find((r) => r.agentId === id)?.branch;
+      const diff: AgentDiff = { agentId: id, branch, files, patch };
+      return diff;
+    } catch (err) {
+      return reply.code(500).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post('/api/agents/:id/review', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { decision, comments } = (req.body ?? {}) as {
+      decision?: 'approve' | 'request-changes';
+      comments?: string;
+    };
+    if (decision === 'approve') {
+      if (!hub.approveReview?.(id)) {
+        return reply.code(404).send({ ok: false, error: 'no review for agent' });
+      }
+      return { ok: true };
+    }
+    if (decision === 'request-changes') {
+      const trimmed = comments?.trim();
+      if (!trimmed) return reply.code(400).send({ ok: false, error: 'comments required' });
+      if (!hub.requestChanges?.(id, trimmed)) {
+        return reply.code(404).send({ ok: false, error: 'no review for agent' });
+      }
+      return { ok: true };
+    }
+    return reply.code(400).send({ ok: false, error: 'unknown decision' });
   });
 
   // ---- repo sessions (agents) ----
@@ -206,6 +262,7 @@ export async function startServer(hub: HubLike, port: number): Promise<FastifyIn
       model?: string;
       maxModel?: 'cheap' | 'mid' | 'top' | 'max';
       autonomy?: 'full' | 'standard' | 'careful';
+      reviewBeforeMerge?: boolean;
     };
     const title = body.title?.trim();
     if (!title) return reply.code(400).send({ ok: false, error: 'title required' });
@@ -225,6 +282,7 @@ export async function startServer(hub: HubLike, port: number): Promise<FastifyIn
         model: body.model,
         maxModel: body.maxModel,
         autonomy: body.autonomy,
+        reviewBeforeMerge: body.reviewBeforeMerge,
       });
       return { ok: true, task };
     } catch (err) {

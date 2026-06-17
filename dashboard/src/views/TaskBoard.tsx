@@ -1,6 +1,6 @@
 import type { StatusSnapshot, TaskStatus } from '../types';
 
-const COLUMNS: TaskStatus[] = ['pending', 'planning', 'running', 'blocked', 'awaiting-merge', 'done', 'failed'];
+const COLUMNS: TaskStatus[] = ['pending', 'planning', 'running', 'blocked', 'needs-review', 'awaiting-merge', 'done', 'failed'];
 
 export default function TaskBoard({ status }: { status: StatusSnapshot }) {
   return (

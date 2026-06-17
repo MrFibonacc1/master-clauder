@@ -54,6 +54,12 @@ Or during development: `pnpm dev <command>` (tsx, no build needed).
 - **Click a repo** (a node in the graph, or a barn in the farm) to open its **session drawer** — every agent that has worked on that repo, with status, model, branch, and cost. Each session has **Open in Claude Code** (runs `claude --resume <sessionId>` in that agent's worktree, so you drop straight back into it), **Reveal** (opens the worktree folder), and a copyable resume command.
 - Also: task board, merge queue, cost dashboard (per agent/task/day vs budget), memory explorer (pin/delete writes back to the vault).
 
+## Review before merge
+
+Turn this on and a finished agent **parks for human review** instead of auto-merging: it holds its worktree, and you see the diff in the dashboard's **Review** tab. **Approve & merge** sends the branch through the merge queue; **Request changes** (with a comment) resumes the same agent — its session intact — to address the feedback. Reviews are persisted in the store, so they survive across CLI/dashboard processes.
+
+Enable per task (`cortex task "..." --review` or the composer's "Review before merge" checkbox), per repo (`reviewBeforeMerge` in `.cortex.json`), or globally (`cortex config set reviewBeforeMerge true`). Backed by `GET /api/reviews`, `GET /api/agents/:id/diff`, `POST /api/agents/:id/review`; lifecycle in [src/cli/hub.ts](src/cli/hub.ts).
+
 ## Autonomy (permissions)
 
 Agents run without pestering you for permission on routine work, while the genuinely dangerous actions are gated. Set globally (`cortex config set autonomy <level>`), per repo (`.cortex.json`), per task (`--yolo` / `--careful`), or in the dashboard composer.

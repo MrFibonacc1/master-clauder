@@ -5,10 +5,11 @@ import BrainView from './views/BrainView';
 import FarmView from './views/FarmView';
 import TaskBoard from './views/TaskBoard';
 import MergeQueueView from './views/MergeQueueView';
+import ReviewView from './views/ReviewView';
 import CostsView from './views/CostsView';
 import MemoryView from './views/MemoryView';
 
-const TABS = ['Brain', 'Farm', 'Tasks', 'Merge Queue', 'Costs', 'Memory'] as const;
+const TABS = ['Brain', 'Farm', 'Tasks', 'Merge Queue', 'Review', 'Costs', 'Memory'] as const;
 type Tab = (typeof TABS)[number];
 
 const TAB_KEY = 'cortex.tab';
@@ -32,11 +33,23 @@ export default function App() {
   const [status, setStatus] = useState<StatusSnapshot>(EMPTY);
   const [events, setEvents] = useState<CortexEvent[]>([]);
   const [composerOpen, setComposerOpen] = useState(false);
+  const [reviewCount, setReviewCount] = useState(0);
   const refreshTimer = useRef<number | null>(null);
 
   useEffect(() => {
     localStorage.setItem(TAB_KEY, tab);
   }, [tab]);
+
+  useEffect(() => {
+    const load = () =>
+      api
+        .reviews()
+        .then((r) => setReviewCount(Array.isArray(r) ? r.length : 0))
+        .catch(() => {});
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     api.events(0).then(setEvents).catch(() => {});
@@ -63,7 +76,7 @@ export default function App() {
         <nav className="tabs">
           {TABS.map((t) => (
             <button key={t} className={`tab${t === tab ? ' active' : ''}`} onClick={() => setTab(t)}>
-              {t}
+              {t === 'Review' && reviewCount > 0 ? `Review (${reviewCount})` : t}
             </button>
           ))}
         </nav>
@@ -80,6 +93,7 @@ export default function App() {
         {tab === 'Farm' && <FarmView status={status} events={events} />}
         {tab === 'Tasks' && <TaskBoard status={status} />}
         {tab === 'Merge Queue' && <MergeQueueView items={status.mergeQueue} />}
+        {tab === 'Review' && <ReviewView />}
         {tab === 'Costs' && <CostsView status={status} events={events} />}
         {tab === 'Memory' && <MemoryView />}
       </main>
@@ -108,6 +122,7 @@ function TaskComposer({ onClose }: { onClose: () => void }) {
   const [model, setModel] = useState('');
   const [maxModel, setMaxModel] = useState('');
   const [autonomy, setAutonomy] = useState('');
+  const [reviewBeforeMerge, setReviewBeforeMerge] = useState(false);
   const [repos, setRepos] = useState<{ name: string; path: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -139,13 +154,19 @@ function TaskComposer({ onClose }: { onClose: () => void }) {
     if (!title.trim() || submitting) return;
     setSubmitting(true);
     setError(null);
-    const body: { title: string; repo?: string; model?: string; maxModel?: string; autonomy?: string } = {
-      title: title.trim(),
-    };
+    const body: {
+      title: string;
+      repo?: string;
+      model?: string;
+      maxModel?: string;
+      autonomy?: string;
+      reviewBeforeMerge?: boolean;
+    } = { title: title.trim() };
     if (repo) body.repo = repo;
     if (model) body.model = model;
     if (maxModel) body.maxModel = maxModel;
     if (autonomy) body.autonomy = autonomy;
+    if (reviewBeforeMerge) body.reviewBeforeMerge = true;
     try {
       const res = await api.createTask(body);
       if (res && res.ok) {
@@ -223,6 +244,10 @@ function TaskComposer({ onClose }: { onClose: () => void }) {
                 </option>
               ))}
             </select>
+          </label>
+          <label className="field field-check">
+            <input type="checkbox" checked={reviewBeforeMerge} onChange={(e) => setReviewBeforeMerge(e.target.checked)} />
+            <span>Review before merge — park the diff for my approval instead of auto-merging</span>
           </label>
           {error && <div className="composer-error">{error}</div>}
           <div className="composer-actions">

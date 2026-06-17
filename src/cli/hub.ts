@@ -89,8 +89,6 @@ export class Hub {
   mergeQueue: MergeQueue;
   modelClient: ModelClient | CliModelClient;
   orchestrator: Orchestrator;
-  /** Finished agents parked awaiting human review (reviewBeforeMerge), keyed by agentId. */
-  private parked = new Map<string, ParkedReview>();
 
   constructor(config?: CortexConfig) {
     this.config = config ?? loadConfig();
@@ -319,7 +317,7 @@ export class Hub {
   // ---------------------------------------------------------------- review (A1)
 
   private park(pr: ParkedReview, summary: string): void {
-    this.parked.set(pr.agentId, { ...pr, summary, parkedAt: Date.now() });
+    this.store.saveReview(pr.agentId, { ...pr, summary, parkedAt: Date.now() } as unknown as Record<string, unknown>);
     const a = this.store.getAgent(pr.agentId);
     if (a) {
       a.status = 'needs-review';
@@ -335,9 +333,13 @@ export class Hub {
     });
   }
 
-  /** Reviews currently awaiting a human decision. */
+  private getParked(agentId: string): ParkedReview | undefined {
+    return this.store.getReview(agentId) as unknown as ParkedReview | undefined;
+  }
+
+  /** Reviews currently awaiting a human decision (durable, cross-process). */
   listReviews(): ReviewInfo[] {
-    return [...this.parked.values()].map((pr) => ({
+    return (this.store.listReviews() as unknown as ParkedReview[]).map((pr) => ({
       agentId: pr.agentId,
       agentName: pr.agentName,
       taskId: pr.taskId,
@@ -352,7 +354,7 @@ export class Hub {
 
   /** The worktree path of a parked agent (for computing its diff). */
   reviewWorktree(agentId: string): { worktreePath: string; mainBranch: string } | undefined {
-    const pr = this.parked.get(agentId);
+    const pr = this.getParked(agentId);
     if (!pr) return undefined;
     const main = repoConfig(this.config, pr.repo)?.mainBranch ?? 'main';
     return { worktreePath: pr.worktreePath, mainBranch: main };
@@ -360,9 +362,9 @@ export class Hub {
 
   /** Approve a parked review → submit the branch to the merge queue. */
   approveReview(agentId: string): boolean {
-    const pr = this.parked.get(agentId);
+    const pr = this.getParked(agentId);
     if (!pr) return false;
-    this.parked.delete(agentId);
+    this.store.deleteReview(agentId);
     this.store.submitMerge({ branch: pr.branch, taskId: pr.taskId, agentId, repo: pr.repo });
     this.store.releaseClaims(agentId);
     const a = this.store.getAgent(agentId);
@@ -378,9 +380,9 @@ export class Hub {
 
   /** Request changes on a parked review → resume the agent with the feedback. */
   requestChanges(agentId: string, comments: string): boolean {
-    const pr = this.parked.get(agentId);
+    const pr = this.getParked(agentId);
     if (!pr) return false;
-    this.parked.delete(agentId);
+    this.store.deleteReview(agentId);
     this.store.append({
       ts: Date.now(),
       type: 'approval.resolved',

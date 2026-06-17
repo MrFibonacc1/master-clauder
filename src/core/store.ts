@@ -57,6 +57,9 @@ CREATE TABLE IF NOT EXISTS merge_queue (
   branch TEXT NOT NULL, task_id TEXT NOT NULL, agent_id TEXT NOT NULL,
   repo TEXT NOT NULL, status TEXT NOT NULL, gate_output TEXT, submitted_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reviews (
+  agent_id TEXT PRIMARY KEY, data TEXT NOT NULL, parked_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage(ts);
 `;
@@ -272,6 +275,28 @@ export class CoordinationStore extends EventEmitter {
   listMergeQueue(): MergeItem[] {
     const rows = this.db.prepare(`SELECT * FROM merge_queue ORDER BY id DESC LIMIT 100`).all() as Record<string, unknown>[];
     return rows.map(rowToMerge);
+  }
+
+  // ---- reviews (parked agents awaiting human review; durable + cross-process) ----
+  saveReview(agentId: string, data: Record<string, unknown>): void {
+    this.db
+      .prepare(`INSERT INTO reviews (agent_id, data, parked_at) VALUES (?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET data=excluded.data, parked_at=excluded.parked_at`)
+      .run(agentId, JSON.stringify(data), Date.now());
+  }
+
+  getReview(agentId: string): Record<string, unknown> | undefined {
+    const r = this.db.prepare(`SELECT data FROM reviews WHERE agent_id=?`).get(agentId) as { data: string } | undefined;
+    return r ? (JSON.parse(r.data) as Record<string, unknown>) : undefined;
+  }
+
+  listReviews(): Record<string, unknown>[] {
+    const rows = this.db.prepare(`SELECT data FROM reviews ORDER BY parked_at`).all() as { data: string }[];
+    return rows.map((r) => JSON.parse(r.data) as Record<string, unknown>);
+  }
+
+  deleteReview(agentId: string): void {
+    this.db.prepare(`DELETE FROM reviews WHERE agent_id=?`).run(agentId);
   }
 }
 
