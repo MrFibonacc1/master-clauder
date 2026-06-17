@@ -41,7 +41,17 @@ Or during development: `pnpm dev <command>` (tsx, no build needed).
 | Composition root + dispatch flow | `src/cli/hub.ts` |
 | CLI + REPL | `src/cli/index.ts` |
 | Dashboard server (Fastify + WS) | `src/cli/server.ts` |
-| Dashboard app (React, canvas force graph) | `dashboard/` |
+| Dashboard app (React, canvas) — brain graph + farm view | `dashboard/` |
+
+## Dashboard
+
+`cortex dashboard` (or any session — it auto-starts) serves a live web UI at `http://localhost:4242`:
+
+- **Launch & manage from the browser** — the **+ New task** button opens a composer (task, repo, model). Model defaults to **Auto (router picks the cheapest capable tier)**; override per task or cap the max tier. **Pause all** halts every agent.
+- **Two switchable agent visualizations** (tabs, last choice remembered):
+  - **Brain** — Obsidian-style glowing force graph: agents, repos, tasks, memory notes.
+  - **Farm** — an isometric farm where each agent is a worker in its repo's plot. Status reads from what they're *doing*: working = swinging a hoe + growing crops, blocked = frozen with a red "!", paused = sitting with "Zzz", done = green ✓ + a golden sheaf, failed = slumped with smoke. Click a worker for its live transcript, model, cost, and branch.
+- Also: task board, merge queue, cost dashboard (per agent/task/day vs budget), memory explorer (pin/delete writes back to the vault).
 
 ## Model tiers
 

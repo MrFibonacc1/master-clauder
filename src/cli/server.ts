@@ -25,7 +25,14 @@ export interface HubLike {
     pause(agentId: string): unknown;
     resume(agentId: string): unknown;
     kill(agentId: string): unknown;
+    pauseAll?(): unknown;
   };
+  dispatchTask?(
+    title: string,
+    repo: string,
+    opts?: { model?: string; maxModel?: string },
+  ): Promise<unknown> | unknown;
+  config?: { repos: Record<string, { name: string; path: string }> };
 }
 
 const FALLBACK_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Cortex</title>
@@ -80,6 +87,44 @@ export async function startServer(hub: HubLike, port: number): Promise<FastifyIn
       return { ok: true };
     });
   }
+
+  app.get('/api/repos', async () => {
+    if (!hub.config) return [];
+    return Object.values(hub.config.repos).map((r) => ({ name: r.name, path: r.path }));
+  });
+
+  app.post('/api/tasks', async (req, reply) => {
+    const body = (req.body ?? {}) as {
+      title?: string;
+      repo?: string;
+      model?: string;
+      maxModel?: 'cheap' | 'mid' | 'top' | 'max';
+    };
+    const title = body.title?.trim();
+    if (!title) return reply.code(400).send({ ok: false, error: 'title required' });
+    if (!hub.dispatchTask || !hub.config) {
+      return reply.code(400).send({ ok: false, error: 'dispatch unavailable' });
+    }
+
+    let repo = body.repo;
+    if (!repo) {
+      const names = Object.keys(hub.config.repos);
+      if (names.length === 1) repo = names[0];
+      else return reply.code(400).send({ ok: false, error: 'repo required (multiple repos registered)' });
+    }
+
+    try {
+      const task = await hub.dispatchTask(title, repo, { model: body.model, maxModel: body.maxModel });
+      return { ok: true, task };
+    } catch (err) {
+      return reply.code(400).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post('/api/agents/pause-all', async () => {
+    await hub.agents?.pauseAll?.();
+    return { ok: true };
+  });
 
   // ---- WebSocket live stream ----
   app.register(async (scope) => {

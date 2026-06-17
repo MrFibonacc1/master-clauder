@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { CoordinationStore } from '../core/store.js';
 import { startServer, type HubLike } from './server.js';
@@ -16,10 +16,20 @@ const fakeBrain: HubLike['brain'] = {
   deleteNote: () => undefined,
 };
 
+const dispatchSpy = vi.fn(async (title: string, repo: string, opts?: { model?: string; maxModel?: string }) => ({
+  id: 'task_1',
+  title,
+  repo,
+  status: 'pending',
+  ...opts,
+}));
+
 const hub: HubLike = {
   status: () => ({ tasks: [], agents: [], costs: { byTask: {}, byAgent: {}, total: 0 } }),
   store,
   brain: fakeBrain,
+  config: { repos: { app: { name: 'app', path: '/repos/app' } } },
+  dispatchTask: dispatchSpy,
 };
 
 let app: FastifyInstance;
@@ -78,5 +88,88 @@ describe('server', () => {
     expect(messages[0].type).toBe('snapshot');
     const evt = messages.find((m) => m.type === 'event');
     expect(evt?.event?.type).toBe('agent.message');
+  });
+
+  it('GET /api/repos returns the registered repos', async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/repos`);
+    expect(res.status).toBe(200);
+    const repos = (await res.json()) as { name: string; path: string }[];
+    expect(repos).toEqual([{ name: 'app', path: '/repos/app' }]);
+  });
+
+  it('POST /api/tasks dispatches and returns the task', async () => {
+    dispatchSpy.mockClear();
+    const res = await fetch(`http://127.0.0.1:${port}/api/tasks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'add dark mode', repo: 'app', model: 'claude-x', maxModel: 'top' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; task: { title: string } };
+    expect(body.ok).toBe(true);
+    expect(body.task.title).toBe('add dark mode');
+    expect(dispatchSpy).toHaveBeenCalledWith('add dark mode', 'app', { model: 'claude-x', maxModel: 'top' });
+  });
+
+  it('POST /api/tasks resolves the sole registered repo when none given', async () => {
+    dispatchSpy.mockClear();
+    const res = await fetch(`http://127.0.0.1:${port}/api/tasks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'tidy up' }),
+    });
+    expect(res.status).toBe(200);
+    expect(dispatchSpy).toHaveBeenCalledWith('tidy up', 'app', { model: undefined, maxModel: undefined });
+  });
+
+  it('POST /api/tasks with no title returns 400', async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/tasks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repo: 'app' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body).toEqual({ ok: false, error: 'title required' });
+  });
+});
+
+describe('server with multiple repos', () => {
+  let multiApp: FastifyInstance;
+  let multiPort: number;
+  const multiStore = new CoordinationStore(path.join(tmp, 'state-multi.db'));
+
+  beforeAll(async () => {
+    const multiHub: HubLike = {
+      status: () => ({ tasks: [], agents: [], costs: { byTask: {}, byAgent: {}, total: 0 } }),
+      store: multiStore,
+      brain: fakeBrain,
+      config: {
+        repos: {
+          app: { name: 'app', path: '/repos/app' },
+          web: { name: 'web', path: '/repos/web' },
+        },
+      },
+      dispatchTask: vi.fn(async () => ({ id: 'task_2' })),
+    };
+    multiApp = await startServer(multiHub, 0);
+    const addr = multiApp.server.address();
+    multiPort = typeof addr === 'object' && addr ? addr.port : 0;
+  });
+
+  afterAll(async () => {
+    await multiApp.close();
+    multiStore.close();
+  });
+
+  it('POST /api/tasks with no repo and multiple repos returns 400', async () => {
+    const res = await fetch(`http://127.0.0.1:${multiPort}/api/tasks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'do something' }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body).toEqual({ ok: false, error: 'repo required (multiple repos registered)' });
   });
 });

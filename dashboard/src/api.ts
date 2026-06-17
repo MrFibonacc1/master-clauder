@@ -29,6 +29,14 @@ export const api = {
     }),
   agentAction: (id: string, action: 'pause' | 'resume' | 'kill') =>
     fetch(`/api/agents/${id}/${action}`, { method: 'POST' }),
+  repos: () => get<{ name: string; path: string }[]>('/api/repos'),
+  createTask: (body: { title: string; repo?: string; model?: string; maxModel?: string }) =>
+    fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => r.json()),
+  pauseAll: () => fetch('/api/agents/pause-all', { method: 'POST' }),
 };
 
 export function openEventStream(onSnapshot: (s: StatusSnapshot) => void, onEvent: (e: CortexEvent) => void): () => void {
