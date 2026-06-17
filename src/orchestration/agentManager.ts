@@ -38,6 +38,7 @@ interface RunningAgent {
   log: WriteStream;
   doneEmitted: boolean;
   lastMsgTs: number;
+  killed: boolean;
 }
 
 const KILL_GRACE_MS = 5000;
@@ -82,6 +83,11 @@ export class AgentManager {
 
   activeCount(): number {
     return this.running.size;
+  }
+
+  /** Seed the last-seen cumulative cost for a session (used when resuming cross-process). */
+  seedSessionCost(sdkSessionId: string, amount: number): void {
+    if (sdkSessionId) this.sessionCost.set(sdkSessionId, amount);
   }
 
   async spawn(spec: AgentSpawnSpec): Promise<AgentResult> {
@@ -137,7 +143,7 @@ export class AgentManager {
     });
 
     const log = createWriteStream(path.join(this.opts.logsDir, `${spec.agentId}.jsonl`), { flags: 'a' });
-    const ra: RunningAgent = { child, record, log, doneEmitted: false, lastMsgTs: Date.now() };
+    const ra: RunningAgent = { child, record, log, doneEmitted: false, lastMsgTs: Date.now(), killed: false };
     this.running.set(spec.agentId, ra);
 
     return new Promise<AgentResult>((resolve) => {
@@ -238,6 +244,11 @@ export class AgentManager {
         this.store.append({ ...base, type: 'agent.memory', payload: { op: msg.op, relPath: msg.relPath } });
         break;
       case 'done':
+        // A killed agent's late 'done' must not downgrade it back to done/failed.
+        if (ra.killed) {
+          finish({ success: false, summary: 'killed by hub' });
+          break;
+        }
         record.status = msg.success ? 'done' : 'failed';
         this.store.upsertAgent(record);
         this.store.append({ ...base, type: 'agent.status', payload: { status: record.status, summary: msg.summary } });
@@ -276,6 +287,7 @@ export class AgentManager {
   kill(agentId: string): void {
     const ra = this.running.get(agentId);
     if (!ra) return;
+    ra.killed = true;
     this.sendToAgent(agentId, { kind: 'kill' });
     const timer = setTimeout(() => {
       if (!ra.child.killed && ra.child.exitCode === null) ra.child.kill('SIGTERM');

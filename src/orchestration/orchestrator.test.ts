@@ -58,8 +58,9 @@ describe('Orchestrator.plan', () => {
     const plan = await orch.plan({ id: 't2', title: 'overlapping', repo: 'repo' }, '');
     expect(calls).toBe(1);
     const [a, b] = plan.subtasks;
-    for (const ga of a.ownership) {
-      for (const gb of b.ownership) {
+    // Disjointness now lives in claimGlobs (real ownership globs stay un-namespaced).
+    for (const ga of a.claimGlobs ?? a.ownership) {
+      for (const gb of b.claimGlobs ?? b.ownership) {
         expect(globsMayOverlap(ga, gb)).toBe(false);
       }
     }
@@ -105,8 +106,11 @@ describe('fixOverlappingOwnership', () => {
       { title: 'a', prompt: 'p', ownership: ['src/**'], suggestedTier: 'mid' },
       { title: 'b', prompt: 'p', ownership: ['src/x/**'], suggestedTier: 'mid' },
     ]);
-    expect(fixed[0].ownership[0]).toBe('subtask-0/src/**');
-    expect(fixed[1].ownership[0]).toBe('subtask-1/src/x/**');
+    // ownership stays real (for write-scoping); only claimGlobs is namespaced.
+    expect(fixed[0].ownership[0]).toBe('src/**');
+    expect(fixed[1].ownership[0]).toBe('src/x/**');
+    expect(fixed[0].claimGlobs?.[0]).toBe('subtask-0/src/**');
+    expect(fixed[1].claimGlobs?.[0]).toBe('subtask-1/src/x/**');
   });
 });
 

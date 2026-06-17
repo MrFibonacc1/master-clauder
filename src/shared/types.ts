@@ -246,7 +246,9 @@ export interface MemoryHit {
 export interface PlannedSubtask {
   title: string;
   prompt: string;
-  ownership: string[]; // path globs this subtask owns
+  ownership: string[]; // REAL path globs this subtask owns (used for write scoping)
+  /** Namespaced globs used ONLY for claim disjointness when ownership overlaps; not real paths. */
+  claimGlobs?: string[];
   suggestedTier: Tier;
 }
 

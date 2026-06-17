@@ -197,6 +197,8 @@ export async function startServer(hub: HubLike, port: number): Promise<FastifyIn
   // lines of the agent's transcript (each is an AgentToHubMsg JSON string).
   app.get('/api/agents/:id/log', async (req) => {
     const { id } = req.params as { id: string };
+    // Agent ids are simple tokens — reject anything else so `id` can't traverse paths.
+    if (!/^[A-Za-z0-9._-]+$/.test(id)) return { ok: true, lines: [] };
     const raw = Number((req.query as Record<string, string>).tail ?? LOG_TAIL_DEFAULT);
     const tail = Number.isFinite(raw) ? Math.min(Math.max(Math.trunc(raw), 0), LOG_TAIL_MAX) : LOG_TAIL_DEFAULT;
     try {

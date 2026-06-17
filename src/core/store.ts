@@ -221,6 +221,12 @@ export class CoordinationStore extends EventEmitter {
     return r.c;
   }
 
+  /** Total recorded cost for an agent (sum of per-turn deltas = last session cumulative). */
+  costForAgent(agentId: string): number {
+    const r = this.db.prepare(`SELECT COALESCE(SUM(cost_usd),0) c FROM usage WHERE agent_id=?`).get(agentId) as { c: number };
+    return r.c;
+  }
+
   costForDay(dayStartTs: number): number {
     const r = this.db.prepare(`SELECT COALESCE(SUM(cost_usd),0) c FROM usage WHERE ts >= ?`).get(dayStartTs) as { c: number };
     return r.c;

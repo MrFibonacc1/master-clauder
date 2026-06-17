@@ -83,6 +83,12 @@ export class MergeQueue {
     try {
       await this.git.mergeBranch(repo.path, item.branch, mainBranch);
       this.store.setMergeStatus(item.id, 'merged');
+      // Clean up the now-merged worktree + branch (best-effort; never fail the merge).
+      try {
+        await this.git.removeWorktree(repo.path, worktreePath, item.branch, { deleteBranch: true });
+      } catch {
+        /* worktree/branch cleanup is best-effort */
+      }
       return { ...item, status: 'merged' };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

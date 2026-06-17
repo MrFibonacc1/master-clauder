@@ -240,8 +240,10 @@ export class Hub {
     let tier = sub.suggestedTier;
     let model = fixedModel ?? modelForTier(tier).id;
 
-    // Acquire claims, waiting if conflicting claims are active.
-    const acquired = await this.waitForClaims(agentId, task.repo, sub.ownership, task.id);
+    // Acquire claims with the (possibly namespaced) claim globs for disjointness,
+    // but scope writes to the REAL ownership globs so they match worktree paths.
+    const claimGlobs = sub.claimGlobs ?? sub.ownership;
+    const acquired = await this.waitForClaims(agentId, task.repo, claimGlobs, task.id);
     if (!acquired) return 'failed';
 
     const { worktreePath, branch } = await this.git.createWorktree(
@@ -349,7 +351,12 @@ export class Hub {
   // ---------------------------------------------------------------- review (A1)
 
   private park(pr: ParkedReview, summary: string): void {
-    this.store.saveReview(pr.agentId, { ...pr, summary, parkedAt: Date.now() } as unknown as Record<string, unknown>);
+    this.store.saveReview(pr.agentId, {
+      ...pr,
+      summary,
+      parkedAt: Date.now(),
+      state: 'parked',
+    } as unknown as Record<string, unknown>);
     const a = this.store.getAgent(pr.agentId);
     if (a) {
       a.status = 'needs-review';
@@ -369,19 +376,35 @@ export class Hub {
     return this.store.getReview(agentId) as unknown as ParkedReview | undefined;
   }
 
-  /** Reviews currently awaiting a human decision (durable, cross-process). */
+  /** Reviews currently awaiting a human decision (durable, cross-process).
+   *  Only 'parked' rows are actionable; rows mid-resume ('changes-running') are hidden. */
   listReviews(): ReviewInfo[] {
-    return (this.store.listReviews() as unknown as ParkedReview[]).map((pr) => ({
-      agentId: pr.agentId,
-      agentName: pr.agentName,
-      taskId: pr.taskId,
-      taskTitle: this.store.getTask(pr.taskId)?.title ?? '',
-      repo: pr.repo,
-      branch: pr.branch,
-      model: pr.model,
-      summary: pr.summary,
-      parkedAt: pr.parkedAt,
-    }));
+    return (this.store.listReviews() as unknown as (ParkedReview & { state?: string })[])
+      .filter((pr) => pr.state !== 'changes-running')
+      .map((pr) => ({
+        agentId: pr.agentId,
+        agentName: pr.agentName,
+        taskId: pr.taskId,
+        taskTitle: this.store.getTask(pr.taskId)?.title ?? '',
+        repo: pr.repo,
+        branch: pr.branch,
+        model: pr.model,
+        summary: pr.summary,
+        parkedAt: pr.parkedAt,
+      }));
+  }
+
+  /** Set a task's status from its outstanding reviews + merge queue (multi-subtask aware). */
+  private reconcileTaskStatus(taskId: string): void {
+    const rows = (this.store.listReviews() as unknown as (ParkedReview & { state?: string })[]).filter(
+      (r) => r.taskId === taskId,
+    );
+    let status: TaskStatus;
+    if (rows.some((r) => r.state !== 'changes-running')) status = 'needs-review';
+    else if (rows.length > 0) status = 'running'; // a subtask is re-running after request-changes
+    else status = this.store.listMergeQueue().some((m) => m.taskId === taskId) ? 'awaiting-merge' : 'failed';
+    this.store.setTaskStatus(taskId, status);
+    this.store.append({ ts: Date.now(), type: 'task.status', taskId, payload: { status } });
   }
 
   /** The worktree path of a parked agent (for computing its diff). */
@@ -405,8 +428,8 @@ export class Hub {
       this.store.upsertAgent(a);
     }
     this.store.append({ ts: Date.now(), type: 'approval.resolved', agentId, taskId: pr.taskId, payload: { decision: 'approve' } });
-    this.store.setTaskStatus(pr.taskId, 'awaiting-merge');
-    this.store.append({ ts: Date.now(), type: 'task.status', taskId: pr.taskId, payload: { status: 'awaiting-merge' } });
+    // Only advance the task if no sibling subtasks are still under review.
+    this.reconcileTaskStatus(pr.taskId);
     return true;
   }
 
@@ -414,7 +437,12 @@ export class Hub {
   requestChanges(agentId: string, comments: string): boolean {
     const pr = this.getParked(agentId);
     if (!pr) return false;
-    this.store.deleteReview(agentId);
+    // Keep a durable review row across the respawn (state 'changes-running') so a
+    // crash mid-resume is recoverable and claims/worktree aren't orphaned.
+    this.store.saveReview(agentId, {
+      ...pr,
+      state: 'changes-running',
+    } as unknown as Record<string, unknown>);
     this.store.append({
       ts: Date.now(),
       type: 'approval.resolved',
@@ -427,10 +455,12 @@ export class Hub {
       a.status = 'working';
       this.store.upsertAgent(a);
     }
-    this.store.setTaskStatus(pr.taskId, 'running');
-    this.store.append({ ts: Date.now(), type: 'task.status', taskId: pr.taskId, payload: { status: 'running' } });
+    this.reconcileTaskStatus(pr.taskId);
 
     const resumeSessionId = this.store.getAgent(agentId)?.sdkSessionId;
+    // Seed the per-session cost baseline so this (possibly cross-process) resume
+    // records deltas against the already-recorded cumulative, not from zero.
+    if (resumeSessionId) this.agents.seedSessionCost(resumeSessionId, this.store.costForAgent(agentId));
     const prompt = `${pr.subPrompt}\n\nA reviewer requested changes:\n${comments}\n\nAddress the feedback in your worktree and commit.`;
     void this.agents
       .spawn({
@@ -451,20 +481,24 @@ export class Hub {
       .then(async (result) => {
         if (result.success) {
           await this.brain.taskLog(pr.repo, pr.subTitle, 'success', result.summary);
-          this.park(pr, result.summary);
-          this.setTaskFromOutcomes(pr.taskId, ['parked']);
+          this.park(pr, result.summary); // re-save state 'parked'
         } else {
           await this.brain.taskLog(pr.repo, pr.subTitle, 'failure', result.summary);
+          this.store.deleteReview(agentId);
           this.store.releaseClaims(agentId);
           const ag = this.store.getAgent(agentId);
           if (ag) {
             ag.status = 'failed';
             this.store.upsertAgent(ag);
           }
-          this.setTaskFromOutcomes(pr.taskId, ['failed']);
         }
+        this.reconcileTaskStatus(pr.taskId);
       })
-      .catch(() => this.store.releaseClaims(agentId));
+      .catch(() => {
+        this.store.deleteReview(agentId);
+        this.store.releaseClaims(agentId);
+        this.reconcileTaskStatus(pr.taskId);
+      });
     return true;
   }
 

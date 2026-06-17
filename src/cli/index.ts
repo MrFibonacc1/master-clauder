@@ -61,8 +61,9 @@ async function resolveRepoForCwd(cfg: CortexConfig): Promise<string | undefined>
   return names.length === 1 ? names[0] : undefined;
 }
 
-/** Start the dashboard server on the hub, tolerating an already-used port. */
-async function startDashboard(hub: Hub, open = false): Promise<string | undefined> {
+/** Start the dashboard server on the hub, tolerating an already-used port.
+ *  `owned` is true when THIS process bound the port (vs another cortex session). */
+async function startDashboard(hub: Hub, open = false): Promise<{ url: string; owned: boolean }> {
   const port = hub.config.dashboardPort;
   const url = `http://localhost:${port}`;
   try {
@@ -71,13 +72,13 @@ async function startDashboard(hub: Hub, open = false): Promise<string | undefine
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== 'EADDRINUSE') throw err;
     console.log(pc.dim(`Dashboard port ${port} already in use — assuming another cortex session is serving it.`));
-    return url;
+    return { url, owned: false };
   }
   if (open) {
     const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
     spawn(opener, [url], { stdio: 'ignore', detached: true }).unref();
   }
-  return url;
+  return { url, owned: true };
 }
 
 function fmtUsd(n: number): string {
@@ -158,9 +159,10 @@ program
         process.exit(1);
       }
       const autonomy = opts.yolo ? 'full' : opts.careful ? 'careful' : undefined;
+    let dash: { url: string; owned: boolean } | undefined;
     if (opts.web) {
-      const url = await startDashboard(hub);
-      if (url) console.log(pc.dim(`Dashboard: ${url}`));
+      dash = await startDashboard(hub);
+      console.log(pc.dim(`Dashboard: ${dash.url}`));
     }
 
     hub.store.on('event', printEvent);
@@ -190,8 +192,22 @@ program
     // shared main checkout and corrupt the working tree / misreport conflicts.
     let final = hub.store.getTask(task.id);
     if (final?.status === 'needs-review') {
-      const url = `http://localhost:${hub.config.dashboardPort}`;
+      const url = dash?.url ?? `http://localhost:${hub.config.dashboardPort}`;
       console.log(pc.yellow(`\nParked for review — open ${url} (Review tab) to approve or request changes.`));
+      if (dash?.owned) {
+        // This process is the only one serving the review endpoints — stay alive
+        // so the human can act on it; ctrl-c cleans up.
+        console.log(pc.dim('(serving the dashboard here; press ctrl-c when done)'));
+        process.on('SIGINT', () => {
+          void hub.shutdown().finally(() => process.exit(0));
+        });
+        await new Promise<void>(() => {}); // block until ctrl-c
+      }
+      // Another cortex process owns the server (or --no-web): the review is durable
+      // in the store and reachable from that process / the next `cortex dashboard`.
+      if (!dash) {
+        console.log(pc.dim('Tip: run `cortex dashboard` to review (this run had --no-web).'));
+      }
       await hub.shutdown();
       process.exit(0);
     }
@@ -277,8 +293,8 @@ program
   .action(async () => {
     const hub = new Hub();
     await hub.init();
-    const url = await startDashboard(hub, true);
-    console.log(pc.green(`Dashboard running at ${url}`));
+    const dash = await startDashboard(hub, true);
+    console.log(pc.green(`Dashboard running at ${dash.url}`));
   });
 
 // ---------------------------------------------------------------- memory
@@ -389,12 +405,12 @@ async function repl(): Promise<void> {
   // Claude-CLI feel: bind the session to the repo you're standing in,
   // and have the website live from the first keystroke.
   let currentRepo = await resolveRepoForCwd(hub.config);
-  const url = await startDashboard(hub);
+  const dash = await startDashboard(hub);
 
   console.log(pc.bold(pc.cyan('cortex')) + pc.dim(' — type a task, or /help'));
   if (currentRepo) console.log(pc.dim(`repo: ${currentRepo}`));
   else console.log(pc.yellow('not inside a registered repo — use /repo <name> or cd into one'));
-  if (url) console.log(pc.dim(`dashboard: ${url}`));
+  console.log(pc.dim(`dashboard: ${dash.url}`));
 
   const promptStr = (): string => pc.magenta(`cortex${currentRepo ? pc.dim(`(${currentRepo})`) : ''}> `);
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: promptStr() });
@@ -428,8 +444,8 @@ async function repl(): Promise<void> {
             console.log(pc.green(`${cmd} → ${rest[0]}`));
             break;
           case 'dashboard': {
-            const u = await startDashboard(hub, true);
-            console.log(pc.green(`Dashboard: ${u}`));
+            const d = await startDashboard(hub, true);
+            console.log(pc.green(`Dashboard: ${d.url}`));
             break;
           }
           case 'repo': {

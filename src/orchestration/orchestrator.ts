@@ -108,9 +108,11 @@ export function fixOverlappingOwnership(subtasks: PlannedSubtask[]): PlannedSubt
     }
   }
   if (!overlapping) return subtasks;
+  // Namespace ONLY the claim globs (for lock disjointness); keep `ownership` as the
+  // real path globs so write-scoping (E2) matches actual worktree files.
   return subtasks.map((st, i) => ({
     ...st,
-    ownership: st.ownership.map((g) => `subtask-${i}/${g.replace(/^\/+/, '')}`),
+    claimGlobs: st.ownership.map((g) => `subtask-${i}/${g.replace(/^\/+/, '')}`),
   }));
 }
 
